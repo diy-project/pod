@@ -1,3 +1,4 @@
 boto3
 fake_useragent
+pyopenssl
 requests
