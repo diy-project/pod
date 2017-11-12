@@ -1,0 +1,7 @@
+certifi
+chardet
+idna
+requests
+urllib3
+*-info
+*.zip
