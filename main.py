@@ -28,15 +28,12 @@ except ImportError, e:
 FILTERED_REQUEST_HEADERS = {
     'Proxy-Connection',
     'Connection',
-    # 'User-Agent',
     'Upgrade-Insecure-Requests',
-    'Strict-Transport-Security',
-    'Alt-Svc',
-    'P3P'
 }
 FILTERED_RESPONSE_HEADERS = {'Connection'}
 
 DEFAULT_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/61.0.3163.100 Safari/537.36'
+OVERRIDE_USER_AGENT = False
 
 MITM_CERT_PATH = 'mitm.ca.pem'
 MITM_KEY_PATH = 'mitm.key.pem'
@@ -66,16 +63,17 @@ Proxy = namedtuple('Proxy', ['request', 'connect', 'stream'])
 ProxyResponse = namedtuple('Response', ['status_code', 'headers', 'content'])
 
 
-def build_local_proxy():
+def build_local_proxy(enableMitm, verbose):
     """Request the resource locally"""
     import requests
+
+    AUTO_DECODED_CONTENTS = {'gzip', 'deflate'}
 
     logger.warn('Running the proxy locally. This provides no privacy!')
     def proxy_request_locally(method, url, headers, body=None):
         kwargs = {
             'headers': headers,
             'allow_redirects': False,
-            'stream': True
         }
         if body:
             kwargs['data'] = body
@@ -83,54 +81,58 @@ def build_local_proxy():
         with requests.request(method, url, **kwargs) as response:
             statusCode = response.status_code
             responseHeaders = {k: response.headers[k] for k in response.headers}
-            responseBody = b''
-            if 'Response-Encoding' in responseHeaders and \
-                            responseHeaders['Response-Encoding'] == 'chunk':
-                for chunk in response.iter_content(chunk_size=None):
-                    responseBody += chunk
+            responseBody = response.content
+
+            if 'Transfer-Encoding' in responseHeaders and \
+                            responseHeaders['Transfer-Encoding'] == 'chunked':
+                del responseHeaders['Transfer-Encoding']
                 responseHeaders['Content-Length'] = len(responseBody)
-                del responseHeaders['Response-Encoding']
-            elif 'Content-Length' in responseHeaders:
-                contentLength = int(responseHeaders['Content-Length'])
-                responseBody = response.raw.read(contentLength)
-            else:
-                responseBody = response.raw.read()
+
+            if 'Content-Encoding' in responseHeaders and \
+                            responseHeaders['Content-Encoding'] in AUTO_DECODED_CONTENTS:
+                del responseHeaders['Content-Encoding']
+                responseHeaders['Content-Length'] = len(responseBody)
 
             return ProxyResponse(
                 status_code=statusCode,
                 headers=responseHeaders,
                 content=responseBody)
 
-    def connect(host, port):
-        sock = socket.create_connection((host, port))
-        return sock
+    if enableMitm:
+        streamProxy = build_mitm_lambda_proxy(proxy_request_locally, verbose)
+    else:
+        def connect(host, port):
+            sock = socket.create_connection((host, port))
+            return sock
 
-    def stream(cliSock, servSock, max_idle_timeout=60):
-        rlist = [cliSock, servSock]
-        wlist = []
-        waitSecs = 1.0
-        idleSecs = 0.0
-        while True:
-            idleSecs += waitSecs
-            (ins, _, exs) = select.select(rlist, wlist, rlist, waitSecs)
-            if exs: break
-            if ins:
-                for i in ins:
-                    out = cliSock if i is servSock else servSock
-                    data = i.recv(8192)
-                    if data:
-                        try:
-                            out.send(data)
-                        except IOError, e:
-                            if e.errno == errno.EPIPE:
-                                break
-                            else:
-                                raise
-                    idleSecs = 0.0
-            if idleSecs >= max_idle_timeout: break
+        def stream(cliSock, servSock, max_idle_timeout=60):
+            rlist = [cliSock, servSock]
+            wlist = []
+            waitSecs = 1.0
+            idleSecs = 0.0
+            while True:
+                idleSecs += waitSecs
+                (ins, _, exs) = select.select(rlist, wlist, rlist, waitSecs)
+                if exs: break
+                if ins:
+                    for i in ins:
+                        out = cliSock if i is servSock else servSock
+                        data = i.recv(8192)
+                        if data:
+                            try:
+                                out.send(data)
+                            except IOError, e:
+                                if e.errno == errno.EPIPE:
+                                    break
+                                else:
+                                    raise
+                        idleSecs = 0.0
+                if idleSecs >= max_idle_timeout: break
 
-    return Proxy(request=proxy_request_locally, connect=connect,
-                 stream=stream)
+        streamProxy = Proxy(request=None, connect=connect, stream=stream)
+
+    return Proxy(request=proxy_request_locally, connect=streamProxy.connect,
+                 stream=streamProxy.stream)
 
 
 def build_mitm_lambda_proxy(request_proxy, verbose):
@@ -248,7 +250,8 @@ def build_mitm_lambda_proxy(request_proxy, verbose):
                 contentLength = int(value)
             headers[header] = value
         headers['Connection'] = 'close'
-        # headers['User-Agent'] = DEFAULT_USER_AGENT
+        if OVERRIDE_USER_AGENT:
+            headers['User-Agent'] = DEFAULT_USER_AGENT
 
         # Read the rest of the body
         if contentLength > 0:
@@ -267,14 +270,15 @@ def build_mitm_lambda_proxy(request_proxy, verbose):
             _print_mitm_response(url, response)
 
         responseLines = []
-        responseLines.append('%s %d %s' %
-                             (httpVersion, response.status_code,
+        responseLines.append('HTTP/1.1 %d %s' %
+                             (response.status_code,
                               responses[response.status_code]))
         for header in response.headers:
             if header in FILTERED_RESPONSE_HEADERS:
                 continue
             responseLines.append('%s: %s' % (header, response.headers[header]))
         responseLines.append('Connection: close')
+        responseLines.append('')
         responseLines.append('')
         cliSslSock.sendall('\r\n'.join(responseLines))
         if response.content:
@@ -374,7 +378,8 @@ def build_handler(proxy, verbose):
                     continue
                 headers[header] = self.headers[header]
             headers['Connection'] = 'close'
-            headers['User-Agent'] = get_user_agent()
+            if OVERRIDE_USER_AGENT:
+                headers['User-Agent'] = get_user_agent()
 
             if method != 'GET':
                 requestBody = self.rfile.read()
@@ -438,7 +443,7 @@ class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
 def main(host, port, functions=None, enableMitm=False,
          runLocal=False, verbose=False):
     if runLocal:
-        proxy = build_local_proxy()
+        proxy = build_local_proxy(enableMitm, verbose)
     else:
         proxy = build_lambda_proxy(functions, enableMitm, verbose)
 

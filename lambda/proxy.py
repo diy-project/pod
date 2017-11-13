@@ -2,6 +2,9 @@ import base64
 import requests
 
 
+AUTO_DECODED_CONTENTS = {'gzip', 'deflate'}
+
+
 def handler(event, context):
     method = event['method']
     url = event['url']
@@ -19,7 +22,6 @@ def handler(event, context):
     kwargs = {
         'headers': requestHeaders,
         'allow_redirects': False,
-        'stream': True
     }
     if requestBody:
         kwargs['data'] = requestBody
@@ -27,18 +29,17 @@ def handler(event, context):
     with requests.request(method, url, **kwargs) as response:
         statusCode = response.status_code
         responseHeaders = {k: response.headers[k] for k in response.headers}
-        responseBody = b''
-        if 'Response-Encoding' in responseHeaders and \
-            responseHeaders['Response-Encoding'] == 'chunked':
-            for chunk in response.iter_content(chunk_size=None):
-                responseBody += chunk
+        responseBody = response.content
+
+        if 'Transfer-Encoding' in responseHeaders and \
+            responseHeaders['Transfer-Encoding'] == 'chunked':
+            del responseHeaders['Transfer-Encoding']
             responseHeaders['Content-Length'] = len(responseBody)
-            del responseHeaders['Response-Encoding']
-        elif 'Content-Length' in responseHeaders:
-            contentLength = int(responseHeaders['Content-Length'])
-            responseBody = response.raw.read(contentLength)
-        else:
-            responseBody = response.raw.read()
+
+        if 'Content-Encoding' in responseHeaders and \
+            responseHeaders['Content-Encoding'] in AUTO_DECODED_CONTENTS:
+            del responseHeaders['Content-Encoding']
+            responseHeaders['Content-Length'] = len(responseBody)
 
         retVal = {
             'statusCode': statusCode,
@@ -46,5 +47,4 @@ def handler(event, context):
         }
         if responseBody:
             retVal['content64'] = base64.b64encode(responseBody)
-        print retVal
         return retVal
