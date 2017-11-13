@@ -70,17 +70,29 @@ def build_local_proxy():
     def proxy_request_locally(method, url, headers, body=None):
         kwargs = {
             'headers': headers,
-            'allow_redirects': False,
-            'stream': True
+            'allow_redirects': False
         }
         if body:
             kwargs['data'] = body
         response = requests.request(method, url, **kwargs)
-        # TODO: automatic decoding of gzip causing issues
+        statusCode = response.status_code
+        responseHeaders = {k: response.headers[k] for k in response.headers}
+        responseBody = response.content
+        if 'Transfer-Encoding' in responseHeaders:
+            responseHeaders['Orig-Transfer-Encoding'] = responseHeaders['Transfer-Encoding']
+            del responseHeaders['Transfer-Encoding']
+        if 'Content-Encoding' in responseHeaders:
+            contentEncoding = responseHeaders['Content-Encoding']
+            responseHeaders['Orig-Content-Encoding'] = contentEncoding
+            # TODO: what if more than one encoding
+            if contentEncoding == 'gzip' or contentEncoding == 'deflate':
+                del responseHeaders['Content-Encoding']
+        responseHeaders['Content-Length'] = len(responseBody) if responseBody else 0
+
         return ProxyResponse(
-            status_code=response.status_code,
-            headers=response.headers,
-            content=response.raw.read())
+            status_code=statusCode,
+            headers=responseHeaders,
+            content=responseBody)
 
     def connect(host, port):
         sock = socket.create_connection((host, port))
