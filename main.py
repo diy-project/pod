@@ -14,6 +14,7 @@ from collections import namedtuple
 from BaseHTTPServer import HTTPServer, BaseHTTPRequestHandler
 from random import SystemRandom
 from SocketServer import ThreadingMixIn
+from threading import Semaphore
 from termcolor import colored
 
 logging.basicConfig(level=logging.INFO)
@@ -299,7 +300,8 @@ def build_mitm_lambda_proxy(request_proxy, verbose):
     return Proxy(request=None, connect=connect, stream=stream)
 
 
-def build_lambda_proxy(functions, enableMitm, verbose):
+def build_lambda_proxy(functions, enableMitm, verbose,
+                       maxParallelRequests=10):
     """Request the resource using lambda"""
     import boto3
 
@@ -310,6 +312,7 @@ def build_lambda_proxy(functions, enableMitm, verbose):
 
     secureRandom = SystemRandom()
     lambda_ = boto3.client('lambda')
+    semaphore = Semaphore(maxParallelRequests)
 
     def proxy_request_with_lambda(method, url, headers, body=None):
         logger.info('Proxying %s %s with Lamdba', method, url)
@@ -321,8 +324,13 @@ def build_lambda_proxy(functions, enableMitm, verbose):
         if body:
             args['body64'] = base64.b64encode(body)
 
-        response = lambda_.invoke(FunctionName=secureRandom.choice(functions),
-                                  Payload=json.dumps(args))
+        semaphore.acquire()
+        try:
+            response = lambda_.invoke(FunctionName=secureRandom.choice(functions),
+                                      Payload=json.dumps(args))
+        finally:
+            semaphore.release()
+
         if response['StatusCode'] != 200:
             logger.error('%s: status=%d', response['FunctionError'],
                           response['StatusCode'])
