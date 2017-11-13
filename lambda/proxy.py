@@ -6,6 +6,11 @@ def handler(event, context):
     method = event['method']
     url = event['url']
     requestHeaders = event['headers']
+
+    print method, url
+    for header, value in requestHeaders.iteritems():
+        print '  %s: %s' % (header, value)
+
     if 'body64' in event:
         requestBody = base64.b64decode(event['body64'])
     else:
@@ -18,26 +23,28 @@ def handler(event, context):
     }
     if requestBody:
         kwargs['data'] = requestBody
-    response = requests.request(method, url, **kwargs)
-    statusCode = response.status_code
-    responseHeaders = {k: response.headers[k] for k in response.headers}
-    responseBody = response.content
-    if 'Transfer-Encoding' in responseHeaders:
-        responseHeaders['Orig-Transfer-Encoding'] = responseHeaders['Transfer-Encoding']
-        del responseHeaders['Transfer-Encoding']
-    if 'Content-Encoding' in responseHeaders:
-        contentEncoding = responseHeaders['Content-Encoding']
-        responseHeaders['Orig-Content-Encoding'] = contentEncoding
-        # TODO: what if more than one encoding
-        if contentEncoding == 'gzip' or contentEncoding == 'deflate' or contentEncoding == 'br':
-            responseHeaders['Content-Encoding'] = 'gzip'
-            responseBody = responseBody.encode('zlib')
-            responseHeaders['Content-Length'] = len(responseBody)
 
-    retVal = {
-        'statusCode': statusCode,
-        'headers': responseHeaders
-    }
-    if responseBody:
-        retVal['content64'] = base64.b64encode(responseBody)
-    return retVal
+    with requests.request(method, url, **kwargs) as response:
+        statusCode = response.status_code
+        responseHeaders = {k: response.headers[k] for k in response.headers}
+        responseBody = b''
+        if 'Response-Encoding' in responseHeaders and \
+            responseHeaders['Response-Encoding'] == 'chunked':
+            for chunk in response.iter_content(chunk_size=None):
+                responseBody += chunk
+            responseHeaders['Content-Length'] = len(responseBody)
+            del responseHeaders['Response-Encoding']
+        elif 'Content-Length' in responseHeaders:
+            contentLength = int(responseHeaders['Content-Length'])
+            responseBody = response.raw.read(contentLength)
+        else:
+            responseBody = response.raw.read()
+
+        retVal = {
+            'statusCode': statusCode,
+            'headers': responseHeaders
+        }
+        if responseBody:
+            retVal['content64'] = base64.b64encode(responseBody)
+        print retVal
+        return retVal
