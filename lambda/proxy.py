@@ -13,18 +13,21 @@ def handler(event, context):
 
     kwargs = {
         'headers': requestHeaders,
-        'allow_redirects': False
+        'allow_redirects': False,
+        'stream': True
     }
     if requestBody:
         kwargs['data'] = requestBody
 
     response = requests.request(method, url, **kwargs)
-    responseBody = response.content
     retVal = {
         'statusCode': response.status_code,
         'headers': {k: response.headers[k] for k in response.headers}
     }
-
+    if 'Content-Length' in response.headers:
+        responseBody = response.raw.read(int(response.headers('Content-Length')))
+    else:
+        responseBody = response.content
     if responseBody:
         retVal['content64'] = base64.b64encode(responseBody)
     return retVal

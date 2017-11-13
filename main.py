@@ -13,6 +13,7 @@ import sys
 from collections import namedtuple
 from BaseHTTPServer import HTTPServer, BaseHTTPRequestHandler
 from SocketServer import ThreadingMixIn
+from termcolor import colored
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__file__)
@@ -69,7 +70,8 @@ def build_local_proxy():
     def proxy_request_locally(method, url, headers, body=None):
         kwargs = {
             'headers': headers,
-            'allow_redirects': False
+            'allow_redirects': False,
+            'stream': True
         }
         if body:
             kwargs['data'] = body
@@ -78,7 +80,7 @@ def build_local_proxy():
         return ProxyResponse(
             status_code=response.status_code,
             headers=response.headers,
-            content=response.content)
+            content=response.raw.read())
 
     def connect(host, port):
         sock = socket.create_connection((host, port))
@@ -112,15 +114,17 @@ def build_local_proxy():
                  stream=stream)
 
 
-def build_mitm_lambda_proxy():
-    """Present a self-signed cert to the client"""
-    logger.warn('MITM proxy enabled')
+def build_mitm_lambda_proxy(request_proxy, verbose):
+    """Present a self-signed cert to the clieWnt"""
+    logger.warn('MITM proxy enabled. This is experimental!')
 
     import atexit
     import hashlib
     import shutil
     import ssl
     import tempfile
+
+    from httplib import responses
     from OpenSSL import crypto
     from threading import Lock
 
@@ -172,28 +176,108 @@ def build_mitm_lambda_proxy():
                 certCache[host] = generate_cert_for_host(host)
             return certCache[host]
 
+
     class SockWrapper(object):
         def __init__(self, host, port):
             self.host = host
             self.port = port
 
         def close(self):
-            raise NotImplementedError
+            pass
 
     def connect(host, port):
         return SockWrapper(host, port)
+
+    def _print_mitm_request(method, url, headers):
+        print colored('command (https): %s %s' % (method, url), 'white', 'on_red')
+        for k, v in headers.iteritems():
+            print '  %s: %s' % (k, v)
+
+    def _print_mitm_response(url, response):
+        print colored('url: %s' % url, 'white', 'on_green')
+        print 'status:', response.status_code
+        for k, v in response.headers.iteritems():
+            print '  %s: %s' % (k, v)
 
     def stream(cliSock, servSock):
         certFile, keyFile = get_cert_for_host(servSock.host)
         context = ssl.SSLContext(ssl.PROTOCOL_SSLv23)
         context.load_cert_chain(certFile, keyFile)
-        context.wrap_socket(cliSock, server_side=True)
-        raise NotImplementedError
+        cliSslSock = context.wrap_socket(cliSock, server_side=True)
 
-    raise NotImplementedError
+        # Read until the end of the headers
+        data = ''
+        request = None
+        while True:
+            chunk = cliSslSock.recv(8192)
+            if chunk == '':
+                break
+            data += chunk
+            if '\r\n\r\n' in data:
+                splitIdx = data.index('\r\n\r\n')
+                request = data[:splitIdx]
+                data = data[splitIdx + 4:]
+                break
+
+        # Parse the headers
+        contentLength = 0
+        if request is None:
+            raise RuntimeError('No request received')
+        requestLines = request.splitlines()
+        method, path, httpVersion = requestLines[0].split(' ', 2)
+        url = 'https://%s:%s%s' % (servSock.host, servSock.port, path)
+        headers = {}
+        for headerLine in requestLines[1:]:
+            header, value = headerLine.split(': ', 1)
+            headerLower = header.lower()
+            if headerLower in FILTERED_REQUEST_HEADERS:
+                continue
+            elif headerLower == 'content-length':
+                contentLength = int(value)
+            else:
+                headers[header] = value
+        headers['connection'] = 'close'
+        headers['user-agent'] = DEFAULT_USER_AGENT
+
+        # Read the rest of the body
+        if contentLength > 0:
+            while len(data) < contentLength:
+                chunk = cliSslSock.recv(8192)
+                if chunk == '':
+                    break
+                data += chunk
+        else:
+            data = None
+
+        if verbose: _print_mitm_request(method, url, headers)
+        response = request_proxy(method, url, headers, data)
+        if verbose: _print_mitm_response(url, response)
+
+        responseLines = []
+        responseLines.append('HTTP/1.1 %d %s' %
+                             (response.status_code,
+                              responses[response.status_code]))
+        if 'Server' in response.headers:
+            responseLines.append('Server: %s' % response.headers['Server'])
+        if 'Date' in response.headers:
+            responseLines.append('Date: %s' % response.headers['Date'])
+        for header in response.headers:
+            headerLower = header.lower()
+            if headerLower in FILTERED_RESPONSE_HEADERS:
+                continue
+            if headerLower == 'date' or headerLower == 'server':
+                continue
+            responseLines.append('%s: %s' % (header, response.headers[header]))
+        responseLines.append('Connection: close')
+        responseLines.append('')
+        cliSslSock.sendall('\r\n'.join(responseLines))
+        if response.content: cliSslSock.sendall(response.content)
+        cliSslSock.shutdown(socket.SHUT_RDWR)
+
+    return Proxy(request=None, connect=connect, stream=stream)
 
 
-def build_lambda_proxy(functions, enableMitm):
+def build_lambda_proxy(functions, enableMitm, verbose):
     """Request the resource using lambda"""
     import boto3
     from random import SystemRandom
@@ -231,9 +315,9 @@ def build_lambda_proxy(functions, enableMitm):
                              headers=payload['headers'],
                              content=content)
     if enableMitm:
-        streamProxy = build_mitm_lambda_proxy()
+        streamProxy = build_mitm_lambda_proxy(proxy_request_with_lambda, verbose)
     else:
-        streamProxy = build_ec2_lambda_proxy()
+        streamProxy = build_local_proxy()
     return Proxy(request=proxy_request_with_lambda,
                  connect=streamProxy.connect, stream=streamProxy.stream)
 
@@ -249,15 +333,13 @@ def build_handler(proxy, verbose):
     class ProxyHandler(BaseHTTPRequestHandler):
 
         def _print_request(self):
-            print 'client:', self.client_address
-            print 'command:', self.command
-            print 'path:', self.path
-            print 'version:', self.request_version
+            print colored('command (http): %s %s' % (self.command, self.path),
+                          'white', 'on_blue')
             for header in self.headers:
                 print '  %s: %s' % (header, self.headers[header])
 
         def _print_response(self, response):
-            print 'url:', self.path
+            print colored('url: %s' % self.path, 'white', 'on_yellow')
             print 'status:', response.status_code
             for header in response.headers:
                 print '  %s: %s' % (header, response.headers[header])
@@ -312,7 +394,7 @@ def build_handler(proxy, verbose):
                 self.end_headers()
                 proxy.stream(self.connection, sock)
             except Exception as e:
-                logger.error('CONNECT error', e)
+                logger.error('CONNECT failed: %s', e)
                 raise
             finally:
                 sock.close()
@@ -339,7 +421,7 @@ def main(host, port, functions=None, enableMitm=False,
     if runLocal:
         proxy = build_local_proxy()
     else:
-        proxy = build_lambda_proxy(functions, enableMitm)
+        proxy = build_lambda_proxy(functions, enableMitm, verbose)
 
     handler = build_handler(proxy, verbose=verbose)
     server = ThreadedHTTPServer((host, port), handler)

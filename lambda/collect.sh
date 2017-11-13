@@ -1,6 +1,6 @@
-%!/bin/sh
+#!/bin/sh
 
-SCRIPTDIR=`dirname ''$BASH_SOURCE'`
+SCRIPTDIR=`dirname '$BASH_SOURCE'`
 pip install requests -t $SCRIPTDIR
 
 zip proxy.zip -r \
