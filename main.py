@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 
 import argparse
+import atexit
 import base64
 import errno
 import json
@@ -21,9 +22,17 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__file__)
 
 try:
+    import boto3
+except ImportError, e:
+    logger.warn('Failed to import boto3')
+    logger.exception(e)
+    boto3 = None
+
+try:
     from fake_useragent import UserAgent
 except ImportError, e:
-    logger.warn('Failed to import fake_useragent.UserAgent', e)
+    logger.warn('Failed to import fake_useragent.UserAgent')
+    logger.exception(e)
     UserAgent = None
 
 FILTERED_REQUEST_HEADERS = {
@@ -53,9 +62,15 @@ def get_args():
     parser.add_argument('--function', '-f', dest='functions',
                         action='append', default=['simple-http-proxy'],
                         help='Lambda functions by name or ARN')
+    parser.add_argument('--long-lived-lambdas', '-l3',
+                        dest='enableLongLivedLambas', action='store_true',
+                        help='Make requests to Lambda using SQS')
     parser.add_argument('--enable-mitm', '-m', action='store_true',
                         dest='enableMitm',
                         help='Run as a MITM for TLS traffic')
+    parser.add_argument('--enable-ec2', '-e', action='store_true',
+                        dest='enableEc2',
+                        help='Run with a proxy in EC2')
     parser.add_argument('--verbose', '-v', action='store_true')
     return parser.parse_args()
 
@@ -100,7 +115,7 @@ def build_local_proxy(enableMitm, verbose):
                 content=responseBody)
 
     if enableMitm:
-        streamProxy = build_mitm_lambda_proxy(proxy_request_locally, verbose)
+        streamProxy = build_mitm_proxy(proxy_request_locally, verbose)
     else:
         def connect(host, port):
             sock = socket.create_connection((host, port))
@@ -136,11 +151,10 @@ def build_local_proxy(enableMitm, verbose):
                  stream=streamProxy.stream)
 
 
-def build_mitm_lambda_proxy(request_proxy, verbose):
+def build_mitm_proxy(request_proxy, verbose):
     """Present a self-signed cert to the clieWnt"""
     logger.warn('MITM proxy enabled. This is experimental!')
 
-    import atexit
     import shutil
     import ssl
     import tempfile
@@ -195,7 +209,6 @@ def build_mitm_lambda_proxy(request_proxy, verbose):
             if host not in certCache:
                 certCache[host] = generate_cert_for_host(host)
             return certCache[host]
-
 
     class SockWrapper(object):
         def __init__(self, host, port):
@@ -300,19 +313,13 @@ def build_mitm_lambda_proxy(request_proxy, verbose):
     return Proxy(request=None, connect=connect, stream=stream)
 
 
-def build_lambda_proxy(functions, enableMitm, verbose,
-                       maxParallelRequests=10):
-    """Request the resource using lambda"""
-    import boto3
-
-    logger.info('Running the proxy with Lambda')
-    if not functions:
-        logger.fatal('No functions specified')
-        sys.exit(-1)
+def get_short_lived_lambda_proxy(functions, maxParallelRequests):
+    """Return a function that proxies each request as a new invocation"""
+    logger.info('Using short-lived Lambdas')
 
     secureRandom = SystemRandom()
     lambda_ = boto3.client('lambda')
-    semaphore = Semaphore(maxParallelRequests)
+    lambdaRateSemaphore = Semaphore(maxParallelRequests)
 
     def proxy_request_with_lambda(method, url, headers, body=None):
         logger.info('Proxying %s %s with Lamdba', method, url)
@@ -324,12 +331,12 @@ def build_lambda_proxy(functions, enableMitm, verbose,
         if body:
             args['body64'] = base64.b64encode(body)
 
-        semaphore.acquire()
+        lambdaRateSemaphore.acquire()
         try:
             response = lambda_.invoke(FunctionName=secureRandom.choice(functions),
                                       Payload=json.dumps(args))
         finally:
-            semaphore.release()
+            lambdaRateSemaphore.release()
 
         if response['StatusCode'] != 200:
             logger.error('%s: status=%d', response['FunctionError'],
@@ -344,11 +351,46 @@ def build_lambda_proxy(functions, enableMitm, verbose,
         return ProxyResponse(status_code=payload['statusCode'],
                              headers=payload['headers'],
                              content=content)
+
+    return proxy_request_with_lambda
+
+
+def get_long_lived_lambda_proxy(functions, verbose, maxLambdas):
+    """Return a function that queues requests in SQS"""
+    logger.info('Using long-lived Lambdas')
+
+    secureRandom = SystemRandom()
+    lambda_ = boto3.client('lambda')
+    sqs = boto3.client('sqs')
+
+    def proxy_request_with_lambda(method, url, headers, data=None):
+        raise NotImplementedError
+
+    # TODO: implement this
+    return proxy_request_with_lambda
+
+
+def build_lambda_proxy(functions, enableMitm, enableLongLivedLambdas,
+                       verbose, maxLambdas=10):
+    """Request the resource using lambda"""
+
+    logger.info('Running the proxy with Lambda')
+    if not functions:
+        logger.fatal('No functions specified')
+        sys.exit(-1)
+
+    if enableLongLivedLambdas:
+        request_proxy = get_long_lived_lambda_proxy(functions, maxLambdas,
+                                                    verbose)
+    else:
+        request_proxy = get_short_lived_lambda_proxy(functions,
+                                                     maxLambdas)
+
     if enableMitm:
-        streamProxy = build_mitm_lambda_proxy(proxy_request_with_lambda, verbose)
+        streamProxy = build_mitm_proxy(request_proxy, verbose)
     else:
         streamProxy = build_local_proxy()
-    return Proxy(request=proxy_request_with_lambda,
+    return Proxy(request=request_proxy,
                  connect=streamProxy.connect, stream=streamProxy.stream)
 
 
@@ -449,11 +491,17 @@ class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
 
 
 def main(host, port, functions=None, enableMitm=False,
-         runLocal=False, verbose=False):
+         enableLongLivedLambas=False, enableEc2=False, runLocal=False,
+         verbose=False):
+    if enableEc2:
+        raise NotImplementedError('EC2 is not supported yet')
+
     if runLocal:
         proxy = build_local_proxy(enableMitm, verbose)
     else:
-        proxy = build_lambda_proxy(functions, enableMitm, verbose)
+        proxy = build_lambda_proxy(functions, enableMitm,
+                                   enableLongLivedLambas,
+                                   verbose)
 
     handler = build_handler(proxy, verbose=verbose)
     server = ThreadedHTTPServer((host, port), handler)
