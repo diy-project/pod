@@ -17,12 +17,13 @@ logger = logging.getLogger(__file__)
 class ShortLivedLambdaProxy(AbstractRequestProxy):
     """Invoke a lambda for each request"""
 
-    def __init__(self, functions, maxParallelRequests=5):
-        self.functions = functions
+    __secureRandom = SystemRandom()
+    __lambda = boto3.client('lambda')
 
-        self.secureRandom = SystemRandom()
-        self.lambdaClient = boto3.client('lambda')
-        self.lambdaRateSema = Semaphore(maxParallelRequests)
+    def __init__(self, functions, maxParallelRequests=5):
+        self.__secureRandom = SystemRandom()
+        self.__functions = functions
+        self.__lambdaRateSemaphore = Semaphore(maxParallelRequests)
 
     def request(self, method, url, headers, body):
         logger.info('Proxying %s %s with Lamdba', method, url)
@@ -34,13 +35,13 @@ class ShortLivedLambdaProxy(AbstractRequestProxy):
         if body is not None:
             args['body64'] = base64.b64encode(body)
 
-        self.lambdaRateSema.acquire()
+        self.__lambdaRateSemaphore.acquire()
         try:
-            response = self.lambdaClient.invoke(
-                FunctionName=self.secureRandom.choice(self.functions),
+            response = self.__lambda.invoke(
+                FunctionName=self.__secureRandom.choice(self.__functions),
                 Payload=json.dumps(args))
         finally:
-            self.lambdaRateSema.release()
+            self.__lambdaRateSemaphore.release()
 
         if response['StatusCode'] != 200:
             logger.error('%s: status=%d', response['FunctionError'],
@@ -60,11 +61,11 @@ class LongLivedLambdaProxy(AbstractRequestProxy):
     """Return a function that queues requests in SQS"""
 
     def __init__(self, functions, maxLambdas=5, verbose=False):
-        self.verbose = verbose
+        self.__verbose = verbose
 
         class ProxyTask(LambdaSqsTaskConfig):
 
-            secureRandom = SystemRandom()
+            __secureRandom = SystemRandom()
 
             @property
             def queue_prefix(self):
@@ -72,7 +73,7 @@ class LongLivedLambdaProxy(AbstractRequestProxy):
 
             @property
             def lambda_function(self):
-                return self.secureRandom.choice(functions)
+                return self.__secureRandom.choice(functions)
 
             @property
             def max_workers(self):
@@ -111,10 +112,15 @@ class LongLivedLambdaProxy(AbstractRequestProxy):
             'headers': headers,
             'hasBody': body is None
         })
-        response = self.workerManager.execute(messageBody, messageAttributes,
+        result = self.workerManager.execute(messageBody, messageAttributes,
                                               timeout=10)
-        if response is None:
+        if result is None:
             return ProxyResponse(status_code=500, headers={}, content='')
 
+        content = result['MessageAttributes']['body']['BinaryValue']
+        payload = json.loads(result['Body'])
 
+        return ProxyResponse(status_code=payload['statusCode'],
+                             headers=payload['headers'],
+                             content=content)
 

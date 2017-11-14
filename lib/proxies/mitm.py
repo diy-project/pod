@@ -21,26 +21,6 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__file__)
 
 
-class MockSocket(object):
-    """Do not use this as an actual socket"""
-
-    def __init__(self, host, port):
-        self.host = host
-        self.port = port
-
-    def close(self):
-        pass
-
-    def send(self, data):
-        raise NotImplementedError
-
-    def recv(self, data):
-        raise NotImplementedError
-
-    def __str__(self):
-        return self.host + ':' + self.port
-
-
 def _print_mitm_request(method, url, headers):
     print colored('command (https): %s %s' % (method, url), 'white', 'on_red')
     for k, v in headers.iteritems():
@@ -58,48 +38,60 @@ def _print_mitm_response(url, response):
 class MitmHttpsProxy(AbstractStreamProxy):
     """Intercepts a stream and translates it to requests"""
 
-    certCache = {}
-    certCacheLock = Lock()
-    secureRandom = SystemRandom()
+    class Connection(AbstractStreamProxy.Connection):
+
+        def __init__(self, host, port):
+            self.host = host
+            self.port = port
+
+        def close(self):
+            pass
+
+        def __str__(self):
+            return self.host + ':' + self.port
+
+    __certCache = {}
+    __certCacheLock = Lock()
+    __secureRandom = SystemRandom()
 
     def __init__(self, requestProxy, certfile, keyfile,
                  overrideUserAgent=False, verbose=False):
         assert isinstance(requestProxy, AbstractRequestProxy)
 
         # Config
-        self.verbose = verbose
-        self.overrideUserAgent = overrideUserAgent
+        self.__verbose = verbose
+        self.___overrideUserAgent = overrideUserAgent
 
         # Single request proxy
-        self.baseRequestProxy = requestProxy
+        self.__requestProxy = requestProxy
 
         # Load root CA certificate and key
-        self.caCert = crypto.load_certificate(crypto.FILETYPE_PEM,
-                                         open(certfile).read())
-        self.caKey = crypto.load_privatekey(crypto.FILETYPE_PEM,
-                                       open(keyfile).read())
+        self.__caCert = crypto.load_certificate(crypto.FILETYPE_PEM,
+                                                open(certfile).read())
+        self.__caKey = crypto.load_privatekey(crypto.FILETYPE_PEM,
+                                              open(keyfile).read())
 
         tempCertDir = tempfile.mkdtemp(suffix='mitmproxy')
         atexit.register(lambda: shutil.rmtree(tempCertDir))
-        self.tempCertDir = tempCertDir
+        self.__tempCertDir = tempCertDir
 
     def connect(self, host, port):
-        return MockSocket(host, port)
+        return MitmHttpsProxy.Connection(host, port)
 
-    def stream(self, cliSock, servSock):
-        certFile, keyFile = self._get_cert_for_host(servSock.host)
+    def stream(self, cliSock, servConn):
+        certFile, keyFile = self.__get_cert_for_host(servConn.host)
         context = ssl.SSLContext(ssl.PROTOCOL_SSLv23)
         context.load_cert_chain(certFile, keyFile)
         cliSslSock = context.wrap_socket(cliSock, server_side=True)
         try:
-            self._stream_one_request(cliSslSock, servSock)
+            self.__stream_one_request(cliSslSock, servConn)
         except Exception, e:
             logger.exception(e)
         finally:
             cliSslSock.shutdown(socket.SHUT_RDWR)
 
-    def _sign_cert_for_host(self, host):
-        serial = self.secureRandom.getrandbits(32)
+    def __sign_cert_for_host(self, host):
+        serial = self.__secureRandom.getrandbits(32)
 
         key = crypto.PKey()
         key.generate_key(crypto.TYPE_RSA, 2048)
@@ -114,13 +106,13 @@ class MitmHttpsProxy(AbstractStreamProxy):
         cert.gmtime_adj_notBefore(0)
         cert.gmtime_adj_notAfter(24 * 60 * 60)
         cert.set_serial_number(serial)
-        cert.set_issuer(self.caCert.get_subject())
+        cert.set_issuer(self.__caCert.get_subject())
         cert.set_pubkey(key)
-        cert.sign(self.caKey, 'sha1')
+        cert.sign(self.__caKey, 'sha1')
 
-        keyPath = os.path.join(self.tempCertDir,
+        keyPath = os.path.join(self.__tempCertDir,
                                host.replace('.', '_') + '.key')
-        certPath = os.path.join(self.tempCertDir,
+        certPath = os.path.join(self.__tempCertDir,
                                 host.replace('.', '_') + '.pem')
         with open(keyPath, 'wb') as ofs:
             ofs.write(crypto.dump_privatekey(crypto.FILETYPE_PEM, key))
@@ -128,16 +120,15 @@ class MitmHttpsProxy(AbstractStreamProxy):
             ofs.write(crypto.dump_certificate(crypto.FILETYPE_PEM, cert))
         return (certPath, keyPath)
 
-    def _get_cert_for_host(self, host):
-        with self.certCacheLock:
-            if host not in self.certCache:
-                resp = self._sign_cert_for_host(host)
-                self.certCache[host] = resp
-            else:
-                resp = self.certCache[host]
+    def __get_cert_for_host(self, host):
+        with self.__certCacheLock:
+            resp = self.__certCache.get(host)
+            if resp is None:
+                resp = self.__sign_cert_for_host(host)
+                self.__certCache[host] = resp
         return resp
 
-    def _stream_one_request(self, cliSslSock, servSock):
+    def __stream_one_request(self, cliSslSock, servSock):
         # Read until the end of the headers
         data = b''
         while True:
@@ -165,7 +156,7 @@ class MitmHttpsProxy(AbstractStreamProxy):
                 contentLength = int(value)
             headers[header] = value
         headers['Connection'] = 'close'
-        if self.overrideUserAgent:
+        if self.___overrideUserAgent:
             headers['User-Agent'] = DEFAULT_USER_AGENT
 
         # Read the rest of the body
@@ -178,10 +169,10 @@ class MitmHttpsProxy(AbstractStreamProxy):
         else:
             data = None
 
-        if self.verbose:
+        if self.__verbose:
             _print_mitm_request(method, url, headers)
-        response = self.baseRequestProxy.request(method, url, headers, data)
-        if self.verbose:
+        response = self.__requestProxy.request(method, url, headers, data)
+        if self.__verbose:
             _print_mitm_response(url, response)
 
         responseLines = []

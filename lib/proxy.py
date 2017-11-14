@@ -14,8 +14,15 @@ class AbstractRequestProxy(object):
 #   [stream] turns over control of the sockets to the proxy
 class AbstractStreamProxy(object):
 
+    class Connection(object):
+
+        @abstractmethod
+        def close(self):
+            pass
+
     @abstractmethod
     def connect(self, host, port):
+        """Return a Connection object"""
         pass
 
     @abstractmethod

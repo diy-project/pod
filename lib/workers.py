@@ -6,31 +6,42 @@ import time
 
 from abc import abstractmethod, abstractproperty
 from random import SystemRandom
-from threading import Event, Lock, Thread
+from threading import Condition, Event, Lock, Thread, Timer
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__file__)
+
+_secureRandom = None
+_lambda = None
+_sqs = None
+def _lazy_module_init():
+    global _secureRandom, _lambda, _sqs
+    if not _secureRandom or not _lambda or not _sqs:
+        _secureRandom = SystemRandom()
+        _lambda = boto3.client('lambda')
+        _sqs = boto3.client('sqs')
 
 
 class Future(object):
 
     def __init__(self):
-        self.event = Event()
-        self.result = None
-        self.aborted = False
+        self.__event = Event()
+        self.__result = None
+        self.__aborted = False
 
     def get(self, timeout=None):
-        self.event.wait(timeout)
-        if self.result is None:
-            self.aborted = True
-        return self.result
+        self.__event.wait(timeout)
+        if self.__result is None:
+            self.__aborted = True
+        return self.__result
 
     def set(self, result):
-        self.result = result
-        self.event.set()
+        self.__result = result
+        self.__event.set()
 
+    @property
     def isAborted(self):
-        return self.aborted
+        return self.__aborted
 
 
 class LambdaSqsTaskConfig(object):
@@ -70,110 +81,157 @@ class LambdaSqsTaskConfig(object):
 
 class WorkerManager(object):
 
-    secureRandom = SystemRandom()
-    lambdaClient = boto3.client('lambda')
-    sqs = boto3.client('sqs')
-
     def __init__(self, taskConfig):
-        self.config = taskConfig
+        _lazy_module_init()
 
-        self.numWorkers = 0
-        self.numWorkersLock = Lock()
+        self.__config = taskConfig
+
+        self.__numWorkers = 0
+        self.__numWorkersLock = Lock()
 
         # RequestId -> Future
-        self.tasksInProgress = {}
+        self.__numTasksInProgress = 0
+        self.__tasksInProgress = {}
+        self.__tasksInProgressLock = Lock()
+        self.__tasksInProgressCondition = Condition(self.__tasksInProgressLock)
 
-        self._init_message_queues(taskConfig.queue_prefix)
+        self.__init_message_queues(taskConfig.queue_prefix)
 
-        resultThread = Thread(self._result_daemon)
-        resultThread.daemon = True
-        resultThread.start()
+        # Start result fetcher thread
+        rt = Thread(self.__result_daemon)
+        rt.daemon = True
+        rt.start()
 
-    def _init_message_queues(self, prefix):
+    def __init_message_queues(self, prefix):
         # Setup the message queues
         currentTime = time.time()
         queueAttributes = {
             'MessageRetentionPeriod': 60,
             'ReceiveMessageWaitTimeSeconds': 20
         }
-        self.taskQueueName = '%s-task-%d' % (prefix, currentTime)
-        self.taskQueue = self.sqs.create_queue(
-            QueueName=self.taskQueueName,
+
+        taskQueueName = '%s-task-%d' % (prefix, currentTime)
+        self.__taskQueueName = taskQueueName
+        self.__taskQueue = _sqs.create_queue(
+            QueueName=taskQueueName,
             Attributes=queueAttributes)
-        atexit.register(lambda x: x.sqs.delete_queue(x.taskQueue.url),
-                        self)
-        self.resultQueueName = '%s-result-%d' % (prefix, currentTime)
-        self.resultQueue = self.sqs.create_queue(
-            QueueName=self.resultQueueName,
+        taskQueueUrl = self.__taskQueue.url
+        atexit.register(lambda: _sqs.delete_queue(taskQueueUrl))
+
+        resultQueueName = '%s-result-%d' % (prefix, currentTime)
+        self.__resultQueueName = resultQueueName
+        self.__resultQueue = _sqs.create_queue(
+            QueueName=resultQueueName,
             Attributes=queueAttributes)
-        atexit.register(lambda x: x.sqs.delete_queue(x.resultQueue.url),
-                        self)
+        resultQueueUrl = self.__resultQueue.url
+        atexit.register(lambda: _sqs.delete_queue(resultQueueUrl))
 
 
     def execute(self, messageBody, messageAttributes=None, timeout=None):
-        with self.numWorkersLock:
-            if self._should_spawn_worker():
-                self._spawn_new_worker()
+        with self.__numWorkersLock:
+            if self.__should_spawn_worker():
+                self.__spawn_new_worker()
         kwargs = {}
         if messageAttributes:
             kwargs['MessageAttributes'] = messageAttributes
-        messageStatus = self.taskQueue.send_message(
+        messageStatus = self.__taskQueue.send_message(
             MessageBody=json.dumps(messageBody), **kwargs)
 
         # Use the MessageId as taskId
         taskId = messageStatus['MessageId']
 
         taskFuture = Future()
-        self.tasksInProgress[taskId] = taskFuture
+        with self.__tasksInProgressLock:
+            self.__tasksInProgress[taskId] = taskFuture
+            self.__numTasksInProgress = len(self.__tasksInProgress)
+            self.__tasksInProgressCondition.notify_all()
 
         result = taskFuture.get(timeout=timeout)
         return result
 
-    def _should_spawn_worker(self):
-        return (self.numWorkers == 0 or
-                (self.numWorkers < self.config.max_workers and
-                 len(self.tasksInProgress) >
-                 self.numWorkers * self.config.load_factor))
+    def __should_spawn_worker(self):
+        return (self.__numWorkers == 0 or
+                (self.__numWorkers < self.__config.max_workers and
+                 self.__numTasksInProgress >
+                 self.__numWorkers * self.__config.load_factor))
 
-    def _spawn_new_worker(self):
-        workerId = self.secureRandom.getrandbits(32)
+    def __spawn_new_worker(self):
+        workerId = _secureRandom.getrandbits(32)
         workerArgs = {
             'workerId': workerId,
-            'taskQueue': self.taskQueueName,
-            'resultQueue': self.resultQueueName,
+            'taskQueue': self.__taskQueueName,
+            'resultQueue': self.__resultQueueName,
         }
-        functionName = self.config.lambda_function
-        self.config.pre_invoke_callback(workerId, workerArgs)
-        t = Thread(target=self._wait_for_worker,
+        functionName = self.__config.lambda_function
+        self.__config.pre_invoke_callback(workerId, workerArgs)
+        t = Thread(target=self.__wait_for_worker,
                    args=(functionName, workerId, workerArgs))
         t.daemon = True
         t.start()
-        with self.numWorkersLock:
-            self.numWorkers += 1
+        with self.__numWorkersLock:
+            self.__numWorkers += 1
 
-    def _wait_for_worker(self, functionName, workerId, workerArgs):
+    def __wait_for_worker(self, functionName, workerId, workerArgs):
         try:
-            response = self.lambdaClient.invoke(FunctionName=functionName,
-                                                Payload=json.dumps(workerArgs))
+            response = _lambda.invoke(FunctionName=functionName,
+                                      Payload=json.dumps(workerArgs))
             if response['StatusCode'] != 200:
                 logger.error('Worker %d exited unexpectedly: %s: status=%d',
                              workerId,
                              response['FunctionError'],
                              response['StatusCode'])
-                self.config.post_return_callback(workerId, None)
+                self.__config.post_return_callback(workerId, None)
             else:
                 workerResponse = json.loads(response['Payload'].read())
-                self.config.post_return_callback(workerId, workerResponse)
+                self.__config.post_return_callback(workerId, workerResponse)
 
         finally:
-            with self.numWorkersLock:
-                self.numWorkers -= 1
+            with self.__numWorkersLock:
+                self.__numWorkers -= 1
 
-    def _result_daemon(self):
+    def __result_daemon(self):
+        requiredAttributes = ['taskId']
+        requiredAttributes.extend(self.__config.result_attributes)
+        resultQueueUrl = self.__resultQueue.url
         while True:
-            messages = self.sqs.receive_message(
-                QueueUrl=self.resultQueue.url,
-                AttributeNames=self.config.result_attributes,
-                MessageAttributeNames=10)
+            # Don't poll SQS unless there is a task in progress
+            with self.__tasksInProgressLock:
+                if self.__numTasksInProgress == 0:
+                    self.__tasksInProgressCondition.wait()
 
-            if messageId
+            # Poll for new messages
+            try:
+                messages = _sqs.receive_message(
+                    QueueUrl=resultQueueUrl,
+                    AttributeNames=requiredAttributes,
+                    MessageAttributeNames=10)
+                for message in messages['messages']:
+                    try:
+                        taskId = message['MessageAttributes']['taskId']['StringValue']
+                        with self.__tasksInProgressLock:
+                            taskFuture = self.__tasksInProgress.get(taskId)
+                            if taskFuture is None:
+                                logger.debug('No future for task: %s', taskId)
+                            else:
+                                taskFuture.set(message)
+                                del self.__tasksInProgress[taskId]
+                                self.__numTasksInProgress = len(self.__tasksInProgress)
+                    except Exception, e:
+                        logger.error('Failed to parse message: %s', message)
+                        logger.exception(e)
+                    finally:
+                        try:
+                            _sqs.delete_message(QueueUrl=resultQueueUrl,
+                                                ReceiptHandle=message['ReceiptHandle'])
+                        except Exception, e:
+                            logger.error('Failed to delete message: %s', message)
+                            logger.exception(e)
+            except Exception, e:
+                logger.error('Error polling SQS')
+                logger.exception(e)
+
+    def __clean_up_aborted_tasks(self):
+        with self.__tasksInProgressLock:
+            for k, v in self.__tasksInProgress.items():
+                if v.isAborted: del self.__tasksInProgress[k]
+            self.__numTasksInProgress = len(self.__tasksInProgress)

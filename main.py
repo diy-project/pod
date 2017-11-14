@@ -5,6 +5,7 @@ import logging
 import sys
 
 from BaseHTTPServer import HTTPServer, BaseHTTPRequestHandler
+from fake_useragent import UserAgent
 from SocketServer import ThreadingMixIn
 from termcolor import colored
 
@@ -18,20 +19,6 @@ from lib.proxies.mitm import MitmHttpsProxy
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__file__)
 
-try:
-    import boto3
-except ImportError, e:
-    logger.warn('Failed to import boto3')
-    logger.exception(e)
-    boto3 = None
-
-try:
-    from fake_useragent import UserAgent
-except ImportError, e:
-    logger.warn('Failed to import fake_useragent.UserAgent')
-    logger.exception(e)
-    UserAgent = None
-
 DEFAULT_PORT = 1080
 DEFAULT_MAX_LAMBDAS = 10
 
@@ -39,6 +26,7 @@ MITM_CERT_PATH = 'mitm.ca.pem'
 MITM_KEY_PATH = 'mitm.key.pem'
 
 OVERRIDE_USER_AGENT = False
+
 
 def get_args():
     """Parse command line arguments"""
@@ -87,7 +75,7 @@ def build_local_proxy(enableMitm, verbose):
 
 
 def build_lambda_proxy(functions, enableMitm,
-                       enableLongLivedLambdas,
+                       enableShortLivedLambdas,
                        maxLambdas, verbose):
     """Request the resource using lambda"""
 
@@ -96,12 +84,12 @@ def build_lambda_proxy(functions, enableMitm,
         logger.fatal('No functions specified')
         sys.exit(-1)
 
-    if enableLongLivedLambdas:
-        logger.info('Using long-lived Lambdas')
-        lambdaProxy = LongLivedLambdaProxy(functions, maxLambdas, verbose)
-    else:
+    if enableShortLivedLambdas:
         logger.info('Using short-lived Lambdas')
         lambdaProxy = ShortLivedLambdaProxy(functions, maxLambdas)
+    else:
+        logger.info('Using long-lived Lambdas')
+        lambdaProxy = LongLivedLambdaProxy(functions, maxLambdas, verbose)
 
     if enableMitm:
         mitmProxy = MitmHttpsProxy(lambdaProxy,
@@ -215,7 +203,7 @@ class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
 def main(host, port,
          functions=None,
          enableMitm=False,
-         enableLongLivedLambas=False,
+         enableShortLivedLambdas=False,
          maxLambdas=DEFAULT_MAX_LAMBDAS,
          enableEc2=False,
          runLocal=False,
@@ -228,7 +216,7 @@ def main(host, port,
     else:
         proxy = build_lambda_proxy(
             functions, enableMitm, maxLambdas,
-            enableLongLivedLambas, verbose=verbose)
+            enableShortLivedLambdas, verbose=verbose)
 
     handler = build_handler(proxy, verbose=verbose)
     server = ThreadedHTTPServer((host, port), handler)

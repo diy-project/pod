@@ -11,8 +11,16 @@ AUTO_DECODED_CONTENTS = {'gzip', 'deflate'}
 
 class LocalProxy(AbstractRequestProxy, AbstractStreamProxy):
 
+    class Connection(AbstractStreamProxy.Connection):
+
+        def __init__(self, sock):
+            self.sock = sock
+
+        def close(self):
+            self.sock.close()
+
     def __init__(self, maxIdleTimeout=60):
-        self.maxIdleTimeout = maxIdleTimeout
+        self.__connIdleTimeout = maxIdleTimeout
 
     def request(self, method, url, headers, body):
         kwargs = {
@@ -44,10 +52,10 @@ class LocalProxy(AbstractRequestProxy, AbstractStreamProxy):
                 content=responseBody)
 
     def connect(self, host, port):
-        sock = socket.create_connection((host, port))
-        return sock
+        return LocalProxy.Connection(socket.create_connection((host, port)))
 
-    def stream(self, cliSock, servSock):
+    def stream(self, cliSock, servConn):
+        servSock = servConn.sock
         rlist = [cliSock, servSock]
         wlist = []
         waitSecs = 1.0
@@ -69,5 +77,5 @@ class LocalProxy(AbstractRequestProxy, AbstractStreamProxy):
                             else:
                                 raise
                     idleSecs = 0.0
-            if idleSecs >= self.maxIdleTimeout: break
+            if idleSecs >= self.__connIdleTimeout: break
 
