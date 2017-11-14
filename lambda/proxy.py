@@ -52,6 +52,10 @@ MAX_NUM_THREADS = 10
 MAX_QUEUED_REQUESTS = 25
 MAX_IDLE_POLLS = 1
 
+# This leaves 4KB
+MAX_PAYLOAD_PER_SQS_MESSAGE = 252 * 1024
+
+
 assert MAX_QUEUED_REQUESTS > MAX_NUM_SQS_MESSAGES, \
     'The maximum number of messages to fetch in one poll ' \
     'cannot be less than the max number of queued requests'
@@ -64,6 +68,10 @@ def _lazy_worker_init():
     if pool is None or sqs is None:
         pool = ThreadPoolExecutor(MAX_NUM_THREADS)
         sqs = boto3.resource('sqs')
+
+
+def send_response_as_fragments(response, taskId, responseQueue):
+    pass
 
 
 def process_single_message(message, responseQueue, queuedRequestsSemaphore):
@@ -99,13 +107,18 @@ def process_single_message(message, responseQueue, queuedRequestsSemaphore):
                 'DataType': 'String'
             }
         }
-        if hasBody:
-            messageAttributes['body'] = {
-                'BinaryValue': response.content,
-                'DataType': 'Binary'
-            }
-        responseQueue.send_message(MessageBody=json.dumps(responseBody),
-                                   MessageAttributes=messageAttributes)
+        messageBody = json.dumps(responseBody)
+        if len(messageBody) + len(response.content) <= MAX_PAYLOAD_PER_SQS_MESSAGE:
+            if hasBody:
+                messageAttributes['body'] = {
+                    'BinaryValue': response.content,
+                    'DataType': 'Binary'
+                }
+            responseQueue.send_message(MessageBody=messageBody,
+                                       MessageAttributes=messageAttributes)
+        else:
+            send_response_as_fragments(response, taskId, responseQueue)
+
     except:
         print traceback.format_exc()
         raise
