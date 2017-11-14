@@ -25,7 +25,7 @@ def _lazy_module_init():
         global _secureRandom, _lambda, _sqs
         _secureRandom = SystemRandom()
         _lambda = boto3.client('lambda')
-        _sqs = boto3.client('sqs')
+        _sqs = boto3.resource('sqs')
         _moduleReady = True
 
 
@@ -72,10 +72,12 @@ class LambdaSqsTaskConfig(object):
         """Target ratio of pending tasks to workers"""
         pass
 
+    @property
     def worker_wait_time(self):
         """Number of seconds each worker will wait for work"""
         return 1
 
+    @property
     def message_retention_period(self):
         """
         Number of seconds each message will persist before
@@ -111,36 +113,41 @@ class WorkerManager(object):
         self.__tasksInProgressLock = Lock()
         self.__tasksInProgressCondition = Condition(self.__tasksInProgressLock)
 
-        self.__init_message_queues(taskConfig.queue_prefix)
+        self.__init_message_queues()
 
         # Start result fetcher thread
-        rt = Thread(self.__result_daemon)
+        rt = Thread(target=self.__result_daemon)
         rt.daemon = True
         rt.start()
 
-    def __init_message_queues(self, prefix):
+    def __init_message_queues(self):
         """Setup the message queues"""
         currentTime = time.time()
-        queueAttributes = {
-            'MessageRetentionPeriod': self.__config.message_retention_period,
-            'ReceiveMessageWaitTimeSeconds': self.__config.worker_wait_time
+        taskQueueAttributes = {
+            'MessageRetentionPeriod': str(self.__config.message_retention_period),
+            'ReceiveMessageWaitTimeSeconds': str(self.__config.worker_wait_time),
         }
-
-        taskQueueName = '%s-task-%d' % (prefix, currentTime)
+        taskQueueName = '%s_task_%d' % (self.__config.queue_prefix, currentTime)
         self.__taskQueueName = taskQueueName
-        self.__taskQueue = _sqs.create_queue(
+        taskQueue = _sqs.create_queue(
             QueueName=taskQueueName,
-            Attributes=queueAttributes)
-        taskQueueUrl = self.__taskQueue.url
-        atexit.register(lambda: _sqs.delete_queue(taskQueueUrl))
+            Attributes=taskQueueAttributes)
+        self.__taskQueue = taskQueue
+        atexit.register(lambda: taskQueue.delete())
+        logger.info('Created task queue: %s', taskQueueName)
 
-        resultQueueName = '%s-result-%d' % (prefix, currentTime)
+        resultQueueAttributes = {
+            'MessageRetentionPeriod': str(self.__config.message_retention_period),
+            'ReceiveMessageWaitTimeSeconds': str(20),
+        }
+        resultQueueName = '%s_result_%d' % (self.__config.queue_prefix, currentTime)
         self.__resultQueueName = resultQueueName
-        self.__resultQueue = _sqs.create_queue(
+        resultQueue = _sqs.create_queue(
             QueueName=resultQueueName,
-            Attributes=queueAttributes)
-        resultQueueUrl = self.__resultQueue.url
-        atexit.register(lambda: _sqs.delete_queue(resultQueueUrl))
+            Attributes=resultQueueAttributes)
+        self.__resultQueue = resultQueue
+        atexit.register(lambda: resultQueue.delete())
+        logger.info('Created result queue: %s', resultQueueName)
 
 
     def execute(self, messageBody, messageAttributes=None, timeout=None):
@@ -168,6 +175,8 @@ class WorkerManager(object):
         return result
 
     def __should_spawn_worker(self):
+        if self.__config.max_workers == 0:
+            return False
         return (self.__numWorkers == 0 or
                 (self.__numWorkers < self.__config.max_workers and
                  self.__numTasksInProgress >
@@ -175,6 +184,7 @@ class WorkerManager(object):
 
     def __spawn_new_worker(self):
         workerId = _secureRandom.getrandbits(32)
+        logger.info('Starting new worker: %d', workerId)
         workerArgs = {
             'workerId': workerId,
             'taskQueue': self.__taskQueueName,
@@ -195,11 +205,12 @@ class WorkerManager(object):
         try:
             response = _lambda.invoke(FunctionName=functionName,
                                       Payload=json.dumps(workerArgs))
-            if response['StatusCode'] != 200:
+            if response['StatusCode'] != 200 or response['FunctionError']:
                 logger.error('Worker %d exited unexpectedly: %s: status=%d',
                              workerId,
                              response['FunctionError'],
                              response['StatusCode'])
+                logger.error(response['Payload'].read())
                 self.__config.post_return_callback(workerId, None)
             else:
                 workerResponse = json.loads(response['Payload'].read())
@@ -213,7 +224,7 @@ class WorkerManager(object):
     def __result_daemon(self):
         """Poll SQS result queue and set futures"""
         requiredAttributes = ['All']
-        resultQueueUrl = self.__resultQueue.url
+        resultQueue = self.__resultQueue
         while True:
             # Don't poll SQS unless there is a task in progress
             with self.__tasksInProgressLock:
@@ -223,12 +234,12 @@ class WorkerManager(object):
             # Poll for new messages
             messages = None
             try:
-                messages = self.__resultQueue.receive_message(
-                    AttributeNames=requiredAttributes,
-                    MessageAttributeNames=MAX_SQS_REQUEST_MESSAGES)
-                for message in messages['messages']:
+                messages = resultQueue.receive_messages(
+                    MessageAttributeNames=requiredAttributes,
+                    MaxNumberOfMessages=MAX_SQS_REQUEST_MESSAGES)
+                for message in messages:
                     try:
-                        taskId = message['MessageAttributes']['taskId']['StringValue']
+                        taskId = message.message_id
                         with self.__tasksInProgressLock:
                             taskFuture = self.__tasksInProgress.get(taskId)
                             if taskFuture is None:
@@ -244,12 +255,12 @@ class WorkerManager(object):
                 logger.error('Error polling SQS')
                 logger.exception(e)
             finally:
-                if messages is not None:
+                if messages is not None and len(messages) > 0:
                     try:
-                        result =self.__resultQueue.delete_messages(
+                        result = resultQueue.delete_messages(
                             Entries=[{
-                                'Id': message['MessageId'],
-                                'ReceiptHandle': message['ReceiptHandle']
+                                'Id': message.message_id,
+                                'ReceiptHandle': message.receipt_handle
                             } for message in messages]
                         )
                         if len(result['Successful']) != len(messages):

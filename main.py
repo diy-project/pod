@@ -215,8 +215,11 @@ def main(host, port,
         proxy = build_local_proxy(enableMitm, verbose=verbose)
     else:
         proxy = build_lambda_proxy(
-            functions, enableMitm, maxLambdas,
-            enableShortLivedLambdas, verbose=verbose)
+            functions=functions,
+            enableMitm=enableMitm,
+            maxLambdas=maxLambdas,
+            enableShortLivedLambdas=enableShortLivedLambdas,
+            verbose=verbose)
 
     handler = build_handler(proxy, verbose=verbose)
     server = ThreadedHTTPServer((host, port), handler)

@@ -3,11 +3,18 @@ import base64
 import boto3
 import json
 import time
+import traceback
 
 from threading import Semaphore
-from concurrent.futures import ThreadPoolExecutor, wait, as_completed
+from concurrent.futures import ThreadPoolExecutor
 
 from shared.proxy import proxy_single_request
+
+
+def log_request(method, url, headers):
+    print method, url
+    for header, value in headers.iteritems():
+        print '  %s: %s' % (header, value)
 
 
 def short_lived_handler(event, context):
@@ -16,9 +23,7 @@ def short_lived_handler(event, context):
     url = event['url']
     requestHeaders = event['headers']
 
-    print method, url
-    for header, value in requestHeaders.iteritems():
-        print '  %s: %s' % (header, value)
+    log_request(method, url, requestHeaders)
 
     if 'body64' in event:
         requestBody = base64.b64decode(event['body64'])
@@ -43,7 +48,7 @@ MESSAGE_ATTRIBUTE_NAMES = ['All']
 MAX_NUM_SQS_MESSAGES = 10
 MAX_NUM_THREADS = 10
 MAX_QUEUED_REQUESTS = 25
-MAX_IDLE_POLLS = 1
+MAX_IDLE_POLLS = 2
 
 assert MAX_QUEUED_REQUESTS > MAX_NUM_SQS_MESSAGES, \
     'The maximum number of messages to fetch in one poll ' \
@@ -53,25 +58,29 @@ pool = None
 sqs = None
 def _lazy_worker_init():
     """Build the thread pool lazily"""
-    if pool is None:
-        global pool, sqs
+    global pool, sqs
+    if pool is None or sqs is None:
         pool = ThreadPoolExecutor(MAX_NUM_THREADS)
-        sqs = boto3.client('sqs')
+        sqs = boto3.resource('sqs')
 
 
 def process_single_message(message, responseQueue, queuedRequestsSemaphore):
+    """Proxy a single message in the thread pool"""
     try:
-        taskId = message['MessageAttributes']['taskId']['StringValue']
-        requestParams = json.loads(message['Body'])
+        taskId = message.message_id
+        requestParams = json.loads(message.body)
 
         method = requestParams['method']
         url = requestParams['url']
         requestHeaders = requestParams['headers']
-        requestBody = message['MessageAttributes']['body']['BinaryValue']
+        hasBody = requestParams['hasBody']
 
-        print method, url
-        for header, value in requestHeaders.iteritems():
-            print '  %s: %s' % (header, value)
+        log_request(method, url, requestHeaders)
+
+        if hasBody:
+            requestBody = message.message_attributes['body']['BinaryValue']
+        else:
+            requestBody = None
 
         response = proxy_single_request(method, url, requestHeaders,
                                         requestBody, gzipResult=True)
@@ -83,15 +92,18 @@ def process_single_message(message, responseQueue, queuedRequestsSemaphore):
         messageAttributes = {
             'body': {
                 'BinaryValue': response.content,
-                'DataType': 'binary'
+                'DataType': 'Binary'
             },
             'taskId': {
                 'StringValue': taskId,
-                'DataType': 'string'
+                'DataType': 'String'
             }
         }
         responseQueue.send_message(MessageBody=json.dumps(responseBody),
                                    MessageAttributes=messageAttributes)
+    except:
+        print traceback.format_exc()
+        raise
     finally:
         queuedRequestsSemaphore.release()
 
@@ -102,12 +114,12 @@ def long_lived_handler(event, context):
     _lazy_worker_init()
 
     workerId = int(event['workerId'])
-    requestQueueName = event['requestQueue']
-    responseQueueName = event['responseQueue']
+    requestQueueName = event['taskQueue']
+    responseQueueName = event['resultQueue']
 
-    print 'Running long-lived as %s' % workerId
+    print 'Running long-lived as: worker %s' % workerId
     print 'Consuming requests from: %s' % requestQueueName
-    print 'Returning response to: %s' % responseQueueName
+    print 'Returning responses to: %s' % responseQueueName
 
     requestQueue = sqs.get_queue_by_name(QueueName=requestQueueName)
     responseQueue = sqs.get_queue_by_name(QueueName=responseQueueName)
@@ -125,6 +137,7 @@ def long_lived_handler(event, context):
         for _ in xrange(MAX_NUM_SQS_MESSAGES):
             queuedRequestsSemaphore.acquire()
 
+        print 'Polling SQS for new requests'
         queuedRequestsSemaphore.acquire(MAX_NUM_SQS_MESSAGES)
         messages = requestQueue.receive_messages(
             MessageAttributeNames=MESSAGE_ATTRIBUTE_NAMES,
@@ -135,22 +148,24 @@ def long_lived_handler(event, context):
             queuedRequestsSemaphore.release()
 
         if len(messages) > 0:
-            # Delete the messages asynchronously
+            print 'Handling %d proxy requests' % len(messages)
             for message in messages:
-                pool.submit(process_single_message, message, responseQueue)
+                pool.submit(process_single_message, message,
+                            responseQueue, queuedRequestsSemaphore)
                 numRequestsProxied += 1
 
             requestQueue.delete_messages(
                 Entries=[{
-                    'Id': message['MessageId'],
-                    'ReceiptHandle': message['ReceiptHandle']
+                    'Id': message.message_id,
+                    'ReceiptHandle': message.receipt_handle
                 } for message in messages])
 
             idlePolls = 0
         else:
+            print 'No new requests from queue'
             idlePolls += 1
 
-        if idlePolls > MAX_IDLE_POLLS:
+        if idlePolls >= MAX_IDLE_POLLS:
             exitReason = 'Idle timeout reached'
             break
 
@@ -160,7 +175,7 @@ def long_lived_handler(event, context):
 
     return {
         'workerId': workerId,
-        'workerLifetime': time.time() - startTime,
+        'workerLifetime': int((time.time() - startTime) * 1000),
         'numRequestsProxied': numRequestsProxied,
         'exitReason': exitReason
     }
@@ -172,3 +187,25 @@ def handler(event, context):
     else:
         return short_lived_handler(event, context)
 
+
+def main(queueId):
+    """Basic local testing"""
+    event = {
+        'longLived': True,
+        'workerId': 0,
+        'taskQueue': 'lambda-proxy_task_%d' % queueId,
+        'resultQueue': 'lambda-proxy_result_%d' % queueId
+    }
+    class DummyContext(object):
+        def get_remaining_time_in_millis(self):
+            return MIN_MILLIS_REMAINING + 1
+    context = DummyContext()
+    while True:
+        print handler(event, context)
+
+if __name__ == '__main__':
+    import sys
+    if len(sys.argv) < 2:
+        print 'Usage: python proxy.py queueId'
+        sys.exit(1)
+    main(int(sys.argv[1]))

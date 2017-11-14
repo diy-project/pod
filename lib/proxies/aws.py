@@ -88,31 +88,34 @@ class LongLivedLambdaProxy(AbstractRequestProxy):
                 workerArgs['longLived'] = True
 
             def post_return_callback(self, workerId, workerResponse):
-                logger.info('Worker %d ran for %ds and proxied %d requests',
-                            workerId, workerResponse['workerLifetime'],
-                            workerResponse['numRequestsProxied'])
+                if workerResponse is not None:
+                    logger.info('Worker %d ran for %dms and proxied %d requests',
+                                workerId, workerResponse['workerLifetime'],
+                                workerResponse['numRequestsProxied'])
 
         self.workerManager = WorkerManager(ProxyTask())
 
     def request(self, method, url, headers, body):
-        messageAttributes = {
-            'body': {
+        messageAttributes = {}
+        hasBody = body is not None and len(body) > 0
+        if hasBody:
+            messageAttributes['body'] = {
                 'BinaryValue': body if body is not None else b'',
-                'DataType': 'binary'
+                'DataType': 'Binary'
             }
-        }
         messageBody = json.dumps({
             'method': method,
             'url': url,
             'headers': headers,
+            'hasBody': hasBody
         })
         result = self.workerManager.execute(messageBody, messageAttributes,
                                             timeout=10)
         if result is None:
             return ProxyResponse(statusCode=500, headers={}, content='')
 
-        content = result['MessageAttributes']['body']['BinaryValue']
-        payload = json.loads(result['Body'])
+        content = result.message_attributes['body']['BinaryValue']
+        payload = json.loads(result.body)
 
         return ProxyResponse(statusCode=payload['statusCode'],
                              headers=payload['headers'],
