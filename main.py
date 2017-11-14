@@ -41,7 +41,7 @@ def get_args():
     parser.add_argument('--function', '-f', dest='functions',
                         action='append', default=['simple-http-proxy'],
                         help='Lambda functions by name or ARN')
-    parser.add_argument('--short-lived-lambdas', '-s',
+    parser.add_argument('--short-lived-lambdas', '-sll',
                         dest='enableShortLivedLambdas', action='store_true',
                         help='Make each lambda a single request/response')
     parser.add_argument('--max-lambdas', '-t', type=int,
@@ -50,9 +50,6 @@ def get_args():
     parser.add_argument('--enable-mitm', '-m', action='store_true',
                         dest='enableMitm',
                         help='Run as a MITM for TLS traffic')
-    parser.add_argument('--enable-ec2', '-e', action='store_true',
-                        dest='enableEc2',
-                        help='Run with a proxy in EC2')
     parser.add_argument('--verbose', '-v', action='store_true')
     return parser.parse_args()
 
@@ -89,7 +86,8 @@ def build_lambda_proxy(functions, enableMitm,
         lambdaProxy = ShortLivedLambdaProxy(functions, maxLambdas)
     else:
         logger.info('Using long-lived Lambdas')
-        lambdaProxy = LongLivedLambdaProxy(functions, maxLambdas, verbose)
+        lambdaProxy = LongLivedLambdaProxy(functions, maxLambdas,
+                                           verbose)
 
     if enableMitm:
         mitmProxy = MitmHttpsProxy(lambdaProxy,
@@ -205,11 +203,8 @@ def main(host, port,
          enableMitm=False,
          enableShortLivedLambdas=False,
          maxLambdas=DEFAULT_MAX_LAMBDAS,
-         enableEc2=False,
          runLocal=False,
          verbose=False):
-    if enableEc2:
-        raise NotImplementedError('EC2 is not supported yet')
 
     if runLocal:
         proxy = build_local_proxy(enableMitm, verbose=verbose)

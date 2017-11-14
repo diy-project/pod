@@ -17,6 +17,7 @@ ACCEPT_ENCODING = 'Accept-Encoding'
 TRANSFER_ENCODING = 'Transfer-Encoding'
 CONTENT_ENCODING = 'Content-Encoding'
 CONTENT_LENGTH = 'Content-Length'
+CONTENT_TYPE = 'Content-Type'
 
 
 ProxyResponse = namedtuple('ProxyResponse', ['statusCode', 'headers', 'content'])
@@ -47,11 +48,13 @@ def proxy_single_request(method, url, headers, body, gzipResult=False):
             del responseHeaders[CONTENT_ENCODING]
 
         if gzipResult and len(responseBody) > MIN_COMPRESS_SIZE:
-            if ACCEPT_ENCODING in responseHeaders and \
-                            'gzip' in responseHeaders[ACCEPT_ENCODING] and \
-                            CONTENT_ENCODING not in responseHeaders:
-                responseBody = responseBody.encode('zlib')
-                responseHeaders[CONTENT_ENCODING] = 'gzip'
+            if (ACCEPT_ENCODING in responseHeaders and
+                        'gzip' in responseHeaders[ACCEPT_ENCODING] and
+                        CONTENT_ENCODING not in responseHeaders):
+                if (CONTENT_TYPE in responseHeaders and
+                            'text' in responseHeaders[CONTENT_TYPE]):
+                    responseBody = responseBody.encode('zlib')
+                    responseHeaders[CONTENT_ENCODING] = 'gzip'
 
         responseHeaders[CONTENT_LENGTH] = len(responseBody)
 

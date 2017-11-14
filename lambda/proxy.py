@@ -1,12 +1,14 @@
 """Proxy requests using AWS Lambda"""
 import base64
 import boto3
+import hashlib
 import json
 import time
 import traceback
 
-from threading import Semaphore
 from concurrent.futures import ThreadPoolExecutor
+from StringIO import StringIO
+from threading import Semaphore, Event
 
 from shared.proxy import proxy_single_request
 
@@ -48,7 +50,7 @@ MESSAGE_ATTRIBUTE_NAMES = ['All']
 MAX_NUM_SQS_MESSAGES = 10
 MAX_NUM_THREADS = 10
 MAX_QUEUED_REQUESTS = 25
-MAX_IDLE_POLLS = 2
+MAX_IDLE_POLLS = 1
 
 assert MAX_QUEUED_REQUESTS > MAX_NUM_SQS_MESSAGES, \
     'The maximum number of messages to fetch in one poll ' \
@@ -85,20 +87,23 @@ def process_single_message(message, responseQueue, queuedRequestsSemaphore):
         response = proxy_single_request(method, url, requestHeaders,
                                         requestBody, gzipResult=True)
 
+        hasBody = response.content is not None and len(response.content) > 0
         responseBody = {
             'statusCode': response.statusCode,
-            'headers': response.headers
+            'headers': response.headers,
+            'hasBody': hasBody
         }
         messageAttributes = {
-            'body': {
-                'BinaryValue': response.content,
-                'DataType': 'Binary'
-            },
             'taskId': {
                 'StringValue': taskId,
                 'DataType': 'String'
             }
         }
+        if hasBody:
+            messageAttributes['body'] = {
+                'BinaryValue': response.content,
+                'DataType': 'Binary'
+            }
         responseQueue.send_message(MessageBody=json.dumps(responseBody),
                                    MessageAttributes=messageAttributes)
     except:
@@ -117,9 +122,9 @@ def long_lived_handler(event, context):
     requestQueueName = event['taskQueue']
     responseQueueName = event['resultQueue']
 
-    print 'Running long-lived as: worker %s' % workerId
-    print 'Consuming requests from: %s' % requestQueueName
-    print 'Returning responses to: %s' % responseQueueName
+    print 'Running long-lived as: worker', workerId
+    print 'Consuming requests from:', requestQueueName
+    print 'Returning responses to:', responseQueueName
 
     requestQueue = sqs.get_queue_by_name(QueueName=requestQueueName)
     responseQueue = sqs.get_queue_by_name(QueueName=responseQueueName)
@@ -138,7 +143,6 @@ def long_lived_handler(event, context):
             queuedRequestsSemaphore.acquire()
 
         print 'Polling SQS for new requests'
-        queuedRequestsSemaphore.acquire(MAX_NUM_SQS_MESSAGES)
         messages = requestQueue.receive_messages(
             MessageAttributeNames=MESSAGE_ATTRIBUTE_NAMES,
             MaxNumberOfMessages=MAX_NUM_SQS_MESSAGES)
@@ -151,7 +155,8 @@ def long_lived_handler(event, context):
             print 'Handling %d proxy requests' % len(messages)
             for message in messages:
                 pool.submit(process_single_message, message,
-                            responseQueue, queuedRequestsSemaphore)
+                            responseQueue,
+                            queuedRequestsSemaphore)
                 numRequestsProxied += 1
 
             requestQueue.delete_messages(
@@ -165,7 +170,7 @@ def long_lived_handler(event, context):
             print 'No new requests from queue'
             idlePolls += 1
 
-        if idlePolls >= MAX_IDLE_POLLS:
+        if idlePolls > MAX_IDLE_POLLS:
             exitReason = 'Idle timeout reached'
             break
 

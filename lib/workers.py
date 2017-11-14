@@ -32,19 +32,19 @@ def _lazy_module_init():
 class Future(object):
 
     def __init__(self):
-        self.__event = Event()
+        self.__done = Event()
         self.__result = None
         self.__aborted = False
 
     def get(self, timeout=None):
-        self.__event.wait(timeout)
+        self.__done.wait(timeout)
         if self.__result is None:
             self.__aborted = True
         return self.__result
 
     def set(self, result):
         self.__result = result
-        self.__event.set()
+        self.__done.set()
 
     @property
     def isAborted(self):
@@ -160,7 +160,7 @@ class WorkerManager(object):
         if messageAttributes:
             kwargs['MessageAttributes'] = messageAttributes
         messageStatus = self.__taskQueue.send_message(
-            MessageBody=json.dumps(messageBody), **kwargs)
+            MessageBody=messageBody, **kwargs)
 
         # Use the MessageId as taskId
         taskId = messageStatus['MessageId']
@@ -169,9 +169,15 @@ class WorkerManager(object):
         with self.__tasksInProgressLock:
             self.__tasksInProgress[taskId] = taskFuture
             self.__numTasksInProgress = len(self.__tasksInProgress)
-            self.__tasksInProgressCondition.notify_all()
+            self.__tasksInProgressCondition.notify()
 
         result = taskFuture.get(timeout=timeout)
+        print result
+
+        with self.__tasksInProgressLock:
+            del self.__tasksInProgress[taskId]
+            self.__numTasksInProgress = len(self.__tasksInProgress)
+
         return result
 
     def __should_spawn_worker(self):
@@ -232,22 +238,23 @@ class WorkerManager(object):
                     self.__tasksInProgressCondition.wait()
 
             # Poll for new messages
+            logger.info('Polling for new results')
             messages = None
             try:
                 messages = resultQueue.receive_messages(
                     MessageAttributeNames=requiredAttributes,
                     MaxNumberOfMessages=MAX_SQS_REQUEST_MESSAGES)
+                logger.info('Received %d messages', len(messages))
                 for message in messages:
                     try:
-                        taskId = message.message_id
+                        taskId = message.message_attributes['taskId']['StringValue']
                         with self.__tasksInProgressLock:
                             taskFuture = self.__tasksInProgress.get(taskId)
                             if taskFuture is None:
-                                logger.debug('No future for task: %s', taskId)
+                                logger.info('No future for task: %s', taskId)
                             else:
+                                logger.info('Setting result: %s', taskId)
                                 taskFuture.set(message)
-                                del self.__tasksInProgress[taskId]
-                                self.__numTasksInProgress = len(self.__tasksInProgress)
                     except Exception, e:
                         logger.error('Failed to parse message: %s', message)
                         logger.exception(e)
@@ -268,10 +275,3 @@ class WorkerManager(object):
                                             % result['Failed'])
                     except Exception, e:
                         logger.exception(e)
-
-    def __clean_up_aborted_tasks(self):
-        """Clean up all orphaned tasks"""
-        with self.__tasksInProgressLock:
-            for k, v in self.__tasksInProgress.items():
-                if v.isAborted: del self.__tasksInProgress[k]
-            self.__numTasksInProgress = len(self.__tasksInProgress)
