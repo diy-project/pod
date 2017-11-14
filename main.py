@@ -1,22 +1,19 @@
 #!/usr/bin/env python
 
 import argparse
-import atexit
-import base64
-import errno
-import json
 import logging
-import os
-import select
-import socket
 import sys
 
-from collections import namedtuple
 from BaseHTTPServer import HTTPServer, BaseHTTPRequestHandler
-from random import SystemRandom
 from SocketServer import ThreadingMixIn
-from threading import Semaphore
 from termcolor import colored
+
+from lib.constants import FILTERED_REQUEST_HEADERS, FILTERED_RESPONSE_HEADERS,\
+    DEFAULT_USER_AGENT
+from lib.proxy import ProxyInstance
+from lib.proxies.local import LocalProxy
+from lib.proxies.aws import ShortLivedLambdaProxy, LongLivedLambdaProxy
+from lib.proxies.mitm import MitmHttpsProxy
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__file__)
@@ -35,24 +32,18 @@ except ImportError, e:
     logger.exception(e)
     UserAgent = None
 
-FILTERED_REQUEST_HEADERS = {
-    'Proxy-Connection',
-    'Connection',
-    'Upgrade-Insecure-Requests',
-}
-FILTERED_RESPONSE_HEADERS = {'Connection'}
-
-DEFAULT_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/61.0.3163.100 Safari/537.36'
-OVERRIDE_USER_AGENT = False
+DEFAULT_PORT = 1080
+DEFAULT_MAX_LAMBDAS = 10
 
 MITM_CERT_PATH = 'mitm.ca.pem'
 MITM_KEY_PATH = 'mitm.key.pem'
 
+OVERRIDE_USER_AGENT = False
 
 def get_args():
     """Parse command line arguments"""
     parser = argparse.ArgumentParser()
-    parser.add_argument('--port', '-p', type=int, default=1080,
+    parser.add_argument('--port', '-p', type=int, default=DEFAULT_PORT,
                         help='Port to listen on')
     parser.add_argument('--host', type=str, default='localhost',
                         help='Address to bind to')
@@ -62,9 +53,12 @@ def get_args():
     parser.add_argument('--function', '-f', dest='functions',
                         action='append', default=['simple-http-proxy'],
                         help='Lambda functions by name or ARN')
-    parser.add_argument('--long-lived-lambdas', '-l3',
-                        dest='enableLongLivedLambas', action='store_true',
-                        help='Make requests to Lambda using SQS')
+    parser.add_argument('--short-lived-lambdas', '-s',
+                        dest='enableShortLivedLambdas', action='store_true',
+                        help='Make each lambda a single request/response')
+    parser.add_argument('--max-lambdas', '-t', type=int,
+                        default=DEFAULT_MAX_LAMBDAS, dest='maxLambdas',
+                        help='Max number of lambdas running at any time')
     parser.add_argument('--enable-mitm', '-m', action='store_true',
                         dest='enableMitm',
                         help='Run as a MITM for TLS traffic')
@@ -75,303 +69,26 @@ def get_args():
     return parser.parse_args()
 
 
-Proxy = namedtuple('Proxy', ['request', 'connect', 'stream'])
-ProxyResponse = namedtuple('Response', ['status_code', 'headers', 'content'])
-
-
 def build_local_proxy(enableMitm, verbose):
     """Request the resource locally"""
-    import requests
-
-    AUTO_DECODED_CONTENTS = {'gzip', 'deflate'}
 
     logger.warn('Running the proxy locally. This provides no privacy!')
-    def proxy_request_locally(method, url, headers, body=None):
-        kwargs = {
-            'headers': headers,
-            'allow_redirects': False,
-        }
-        if body:
-            kwargs['data'] = body
 
-        with requests.request(method, url, **kwargs) as response:
-            statusCode = response.status_code
-            responseHeaders = {k: response.headers[k] for k in response.headers}
-            responseBody = response.content
-
-            if 'Transfer-Encoding' in responseHeaders and \
-                            responseHeaders['Transfer-Encoding'] == 'chunked':
-                del responseHeaders['Transfer-Encoding']
-                responseHeaders['Content-Length'] = len(responseBody)
-
-            if 'Content-Encoding' in responseHeaders and \
-                            responseHeaders['Content-Encoding'] in AUTO_DECODED_CONTENTS:
-                del responseHeaders['Content-Encoding']
-                responseHeaders['Content-Length'] = len(responseBody)
-
-            return ProxyResponse(
-                status_code=statusCode,
-                headers=responseHeaders,
-                content=responseBody)
-
+    localProxy = LocalProxy()
     if enableMitm:
-        streamProxy = build_mitm_proxy(proxy_request_locally, verbose)
+        logger.warn('MITM proxy enabled. This is experimental!')
+        mitmProxy = MitmHttpsProxy(localProxy,
+                                   MITM_CERT_PATH, MITM_KEY_PATH,
+                                   overrideUserAgent=OVERRIDE_USER_AGENT,
+                                   verbose=verbose)
+        return ProxyInstance(requestProxy=localProxy, streamProxy=mitmProxy)
     else:
-        def connect(host, port):
-            sock = socket.create_connection((host, port))
-            return sock
-
-        def stream(cliSock, servSock, max_idle_timeout=60):
-            rlist = [cliSock, servSock]
-            wlist = []
-            waitSecs = 1.0
-            idleSecs = 0.0
-            while True:
-                idleSecs += waitSecs
-                (ins, _, exs) = select.select(rlist, wlist, rlist, waitSecs)
-                if exs: break
-                if ins:
-                    for i in ins:
-                        out = cliSock if i is servSock else servSock
-                        data = i.recv(8192)
-                        if data:
-                            try:
-                                out.send(data)
-                            except IOError, e:
-                                if e.errno == errno.EPIPE:
-                                    break
-                                else:
-                                    raise
-                        idleSecs = 0.0
-                if idleSecs >= max_idle_timeout: break
-
-        streamProxy = Proxy(request=None, connect=connect, stream=stream)
-
-    return Proxy(request=proxy_request_locally, connect=streamProxy.connect,
-                 stream=streamProxy.stream)
+        return ProxyInstance(requestProxy=localProxy, streamProxy=localProxy)
 
 
-def build_mitm_proxy(request_proxy, verbose):
-    """Present a self-signed cert to the clieWnt"""
-    logger.warn('MITM proxy enabled. This is experimental!')
-
-    import shutil
-    import ssl
-    import tempfile
-
-    from httplib import responses
-    from OpenSSL import crypto
-    from threading import Lock
-
-    caCert = crypto.load_certificate(crypto.FILETYPE_PEM,
-                                     open(MITM_CERT_PATH).read())
-    caKey = crypto.load_privatekey(crypto.FILETYPE_PEM,
-                                   open(MITM_KEY_PATH).read())
-
-    tempCertDir = tempfile.mkdtemp(suffix='mitmproxy')
-    atexit.register(lambda: shutil.rmtree(tempCertDir))
-
-    secureRandom = SystemRandom()
-    certCache = {}
-    certCacheLock = Lock()
-    def get_cert_for_host(host):
-        def generate_cert_for_host(host):
-            serial = secureRandom.getrandbits(32)
-
-            key = crypto.PKey()
-            key.generate_key(crypto.TYPE_RSA, 2048)
-
-            cert = crypto.X509()
-            cert.get_subject().C = 'US'
-            cert.get_subject().ST = 'California'
-            cert.get_subject().L = 'Palo Alto'
-            cert.get_subject().O = 'Stanford University'
-            cert.get_subject().OU = 'MITM Proxy'
-            cert.get_subject().CN = host
-            cert.gmtime_adj_notBefore(0)
-            cert.gmtime_adj_notAfter(24 * 60 * 60)
-            cert.set_serial_number(serial)
-            cert.set_issuer(caCert.get_subject())
-            cert.set_pubkey(key)
-            cert.sign(caKey, 'sha1')
-
-            keyPath = os.path.join(tempCertDir,
-                                   host.replace('.','_') + '.key')
-            certPath = os.path.join(tempCertDir,
-                                   host.replace('.','_') + '.pem')
-            with open(keyPath, 'wb') as ofs:
-                ofs.write(crypto.dump_privatekey(crypto.FILETYPE_PEM, key))
-            with open(certPath, 'wb') as ofs:
-                ofs.write(crypto.dump_certificate(crypto.FILETYPE_PEM, cert))
-            return (certPath, keyPath)
-
-        with certCacheLock:
-            if host not in certCache:
-                certCache[host] = generate_cert_for_host(host)
-            return certCache[host]
-
-    class SockWrapper(object):
-        def __init__(self, host, port):
-            self.host = host
-            self.port = port
-
-        def close(self):
-            pass
-
-        def __str__(self):
-            return self.host + ':' + self.port
-
-    def connect(host, port):
-        return SockWrapper(host, port)
-
-    def _print_mitm_request(method, url, headers):
-        print colored('command (https): %s %s' % (method, url), 'white', 'on_red')
-        for k, v in headers.iteritems():
-            print '  %s: %s' % (k, v)
-
-    def _print_mitm_response(url, response):
-        print colored('url: %s' % url, 'white', 'on_green')
-        print 'status:', response.status_code
-        for k, v in response.headers.iteritems():
-            print '  %s: %s' % (k, v)
-        print 'content-len:', len(response.content)
-
-    def _stream_one_request(cliSslSock, servSock):
-        # Read until the end of the headers
-        data = b''
-        while True:
-            chunk = cliSslSock.recv(8192)
-            if chunk == '':
-                raise IOError('Unable to parse request: %s' % servSock)
-            data += chunk
-            if '\r\n\r\n' in data:
-                splitIdx = data.index('\r\n\r\n')
-                request = data[:splitIdx]
-                data = data[splitIdx + 4:]
-                break
-
-        # Parse the headers
-        contentLength = 0
-        requestLines = request.splitlines()
-        method, path, httpVersion = requestLines[0].split(' ', 2)
-        url = 'https://%s:%s%s' % (servSock.host, servSock.port, path)
-        headers = {}
-        for headerLine in requestLines[1:]:
-            header, value = headerLine.split(': ', 1)
-            if header in FILTERED_REQUEST_HEADERS:
-                continue
-            if header == 'Content-Length':
-                contentLength = int(value)
-            headers[header] = value
-        headers['Connection'] = 'close'
-        if OVERRIDE_USER_AGENT:
-            headers['User-Agent'] = DEFAULT_USER_AGENT
-
-        # Read the rest of the body
-        if contentLength > 0:
-            while len(data) < contentLength:
-                chunk = cliSslSock.recv(8192)
-                if chunk == '':
-                    raise IOError('Failed to read all data: %s' % servSock)
-                data += chunk
-        else:
-            data = None
-
-        if verbose:
-            _print_mitm_request(method, url, headers)
-        response = request_proxy(method, url, headers, data)
-        if verbose:
-            _print_mitm_response(url, response)
-
-        responseLines = []
-        responseLines.append('HTTP/1.1 %d %s' %
-                             (response.status_code,
-                              responses[response.status_code]))
-        for header in response.headers:
-            if header in FILTERED_RESPONSE_HEADERS:
-                continue
-            responseLines.append('%s: %s' % (header, response.headers[header]))
-        responseLines.append('Connection: close')
-        responseLines.append('')
-        responseLines.append('')
-        cliSslSock.sendall('\r\n'.join(responseLines))
-        if response.content:
-            cliSslSock.sendall(response.content)
-
-    def stream(cliSock, servSock):
-        certFile, keyFile = get_cert_for_host(servSock.host)
-        context = ssl.SSLContext(ssl.PROTOCOL_SSLv23)
-        context.load_cert_chain(certFile, keyFile)
-        cliSslSock = context.wrap_socket(cliSock, server_side=True)
-        try:
-            _stream_one_request(cliSslSock, servSock)
-        except Exception, e:
-            logger.exception(e)
-        finally:
-            cliSslSock.shutdown(socket.SHUT_RDWR)
-
-    return Proxy(request=None, connect=connect, stream=stream)
-
-
-def get_short_lived_lambda_proxy(functions, maxParallelRequests):
-    """Return a function that proxies each request as a new invocation"""
-    logger.info('Using short-lived Lambdas')
-
-    secureRandom = SystemRandom()
-    lambda_ = boto3.client('lambda')
-    lambdaRateSemaphore = Semaphore(maxParallelRequests)
-
-    def proxy_request_with_lambda(method, url, headers, body=None):
-        logger.info('Proxying %s %s with Lamdba', method, url)
-        args = {
-            'method': method,
-            'url': url,
-            'headers': headers,
-        }
-        if body:
-            args['body64'] = base64.b64encode(body)
-
-        lambdaRateSemaphore.acquire()
-        try:
-            response = lambda_.invoke(FunctionName=secureRandom.choice(functions),
-                                      Payload=json.dumps(args))
-        finally:
-            lambdaRateSemaphore.release()
-
-        if response['StatusCode'] != 200:
-            logger.error('%s: status=%d', response['FunctionError'],
-                          response['StatusCode'])
-            return ProxyResponse(status_code=500, headers={}, content='')
-
-        payload = json.loads(response['Payload'].read())
-        if 'content64' in payload:
-            content = base64.b64decode(payload['content64'])
-        else:
-            content = ''
-        return ProxyResponse(status_code=payload['statusCode'],
-                             headers=payload['headers'],
-                             content=content)
-
-    return proxy_request_with_lambda
-
-
-def get_long_lived_lambda_proxy(functions, verbose, maxLambdas):
-    """Return a function that queues requests in SQS"""
-    logger.info('Using long-lived Lambdas')
-
-    secureRandom = SystemRandom()
-    lambda_ = boto3.client('lambda')
-    sqs = boto3.client('sqs')
-
-    def proxy_request_with_lambda(method, url, headers, data=None):
-        raise NotImplementedError
-
-    # TODO: implement this
-    return proxy_request_with_lambda
-
-
-def build_lambda_proxy(functions, enableMitm, enableLongLivedLambdas,
-                       verbose, maxLambdas=10):
+def build_lambda_proxy(functions, enableMitm,
+                       enableLongLivedLambdas,
+                       maxLambdas, verbose):
     """Request the resource using lambda"""
 
     logger.info('Running the proxy with Lambda')
@@ -380,18 +97,22 @@ def build_lambda_proxy(functions, enableMitm, enableLongLivedLambdas,
         sys.exit(-1)
 
     if enableLongLivedLambdas:
-        request_proxy = get_long_lived_lambda_proxy(functions, maxLambdas,
-                                                    verbose)
+        logger.info('Using long-lived Lambdas')
+        lambdaProxy = LongLivedLambdaProxy(functions, maxLambdas, verbose)
     else:
-        request_proxy = get_short_lived_lambda_proxy(functions,
-                                                     maxLambdas)
+        logger.info('Using short-lived Lambdas')
+        lambdaProxy = ShortLivedLambdaProxy(functions, maxLambdas)
 
     if enableMitm:
-        streamProxy = build_mitm_proxy(request_proxy, verbose)
+        mitmProxy = MitmHttpsProxy(lambdaProxy,
+                                   MITM_CERT_PATH, MITM_KEY_PATH,
+                                   overrideUserAgent=OVERRIDE_USER_AGENT,
+                                   verbose=verbose)
+        return ProxyInstance(requestProxy=lambdaProxy, streamProxy=mitmProxy)
     else:
-        streamProxy = build_local_proxy()
-    return Proxy(request=request_proxy,
-                 connect=streamProxy.connect, stream=streamProxy.stream)
+        logger.info('HTTPS will use the local proxy')
+        localProxy = LocalProxy()
+        return ProxyInstance(requestProxy=lambdaProxy, streamProxy=localProxy)
 
 
 def build_handler(proxy, verbose):
@@ -431,6 +152,7 @@ def build_handler(proxy, verbose):
             if OVERRIDE_USER_AGENT:
                 headers['User-Agent'] = get_user_agent()
 
+            # TODO: which other requests have no bodies?
             if method != 'GET':
                 requestBody = self.rfile.read()
             else:
@@ -490,18 +212,23 @@ class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
     """Handle requests in a separate thread."""
 
 
-def main(host, port, functions=None, enableMitm=False,
-         enableLongLivedLambas=False, enableEc2=False, runLocal=False,
+def main(host, port,
+         functions=None,
+         enableMitm=False,
+         enableLongLivedLambas=False,
+         maxLambdas=DEFAULT_MAX_LAMBDAS,
+         enableEc2=False,
+         runLocal=False,
          verbose=False):
     if enableEc2:
         raise NotImplementedError('EC2 is not supported yet')
 
     if runLocal:
-        proxy = build_local_proxy(enableMitm, verbose)
+        proxy = build_local_proxy(enableMitm, verbose=verbose)
     else:
-        proxy = build_lambda_proxy(functions, enableMitm,
-                                   enableLongLivedLambas,
-                                   verbose)
+        proxy = build_lambda_proxy(
+            functions, enableMitm, maxLambdas,
+            enableLongLivedLambas, verbose=verbose)
 
     handler = build_handler(proxy, verbose=verbose)
     server = ThreadedHTTPServer((host, port), handler)
