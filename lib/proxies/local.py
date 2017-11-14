@@ -3,10 +3,7 @@ import requests
 import select
 import socket
 
-from ..proxy import AbstractRequestProxy, AbstractStreamProxy, ProxyResponse
-
-
-AUTO_DECODED_CONTENTS = {'gzip', 'deflate'}
+from lib.proxy import AbstractRequestProxy, AbstractStreamProxy, proxy_single_request
 
 
 class LocalProxy(AbstractRequestProxy, AbstractStreamProxy):
@@ -22,39 +19,15 @@ class LocalProxy(AbstractRequestProxy, AbstractStreamProxy):
     def __init__(self, maxIdleTimeout=60):
         self.__connIdleTimeout = maxIdleTimeout
 
-    def request(self, method, url, headers, body):
-        kwargs = {
-            'headers': headers,
-            'allow_redirects': False,
-        }
-        if body:
-            kwargs['data'] = body
-
-        with requests.request(method, url, **kwargs) as response:
-            statusCode = response.status_code
-            responseHeaders = {k: response.headers[k] for k in response.headers}
-            responseBody = response.content
-
-            if ('Transfer-Encoding' in responseHeaders and
-                        responseHeaders['Transfer-Encoding'] == 'chunked'):
-                del responseHeaders['Transfer-Encoding']
-                responseHeaders['Content-Length'] = len(responseBody)
-
-            if ('Content-Encoding' in responseHeaders and
-                        responseHeaders['Content-Encoding']
-                    in AUTO_DECODED_CONTENTS):
-                del responseHeaders['Content-Encoding']
-                responseHeaders['Content-Length'] = len(responseBody)
-
-            return ProxyResponse(
-                status_code=statusCode,
-                headers=responseHeaders,
-                content=responseBody)
+    def request(self, *args):
+        return proxy_single_request(*args)
 
     def connect(self, host, port):
         return LocalProxy.Connection(socket.create_connection((host, port)))
 
     def stream(self, cliSock, servConn):
+        assert isinstance(servConn, LocalProxy.Connection)
+
         servSock = servConn.sock
         rlist = [cliSock, servSock]
         wlist = []

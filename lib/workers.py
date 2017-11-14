@@ -11,15 +11,22 @@ from threading import Condition, Event, Lock, Thread, Timer
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__file__)
 
+
+MAX_SQS_REQUEST_MESSAGES = 10
+
+
+_moduleReady = False
 _secureRandom = None
 _lambda = None
 _sqs = None
 def _lazy_module_init():
-    global _secureRandom, _lambda, _sqs
-    if not _secureRandom or not _lambda or not _sqs:
+    global _moduleReady
+    if not _moduleReady:
+        global _secureRandom, _lambda, _sqs
         _secureRandom = SystemRandom()
         _lambda = boto3.client('lambda')
         _sqs = boto3.client('sqs')
+        _moduleReady = True
 
 
 class Future(object):
@@ -48,10 +55,12 @@ class LambdaSqsTaskConfig(object):
 
     @abstractproperty
     def queue_prefix(self):
+        """Prefix of the temporary SQS queues"""
         pass
 
     @abstractproperty
     def lambda_function(self):
+        """Name of lambda function to call"""
         pass
 
     @abstractproperty
@@ -60,22 +69,29 @@ class LambdaSqsTaskConfig(object):
 
     @abstractproperty
     def load_factor(self):
+        """Target ratio of pending tasks to workers"""
         pass
 
-    @abstractproperty
-    def result_attributes(self):
-        """List of SQS message attributes required by the caller"""
-        pass
+    def worker_wait_time(self):
+        """Number of seconds each worker will wait for work"""
+        return 1
 
-    @abstractmethod
+    def message_retention_period(self):
+        """
+        Number of seconds each message will persist before
+        timing our
+        """
+        return 60
+
     def pre_invoke_callback(self, workerId, workerArgs):
         """Add any extra args to workerArgs"""
         pass
 
-    @abstractmethod
     def post_return_callback(self, workerId, workerResponse):
-        """Called on worker exit. WorkerResponse is None if there was
-        an error"""
+        """
+        Called on worker exit. WorkerResponse is None if there was
+        an error
+        """
         pass
 
 
@@ -103,11 +119,11 @@ class WorkerManager(object):
         rt.start()
 
     def __init_message_queues(self, prefix):
-        # Setup the message queues
+        """Setup the message queues"""
         currentTime = time.time()
         queueAttributes = {
-            'MessageRetentionPeriod': 60,
-            'ReceiveMessageWaitTimeSeconds': 20
+            'MessageRetentionPeriod': self.__config.message_retention_period,
+            'ReceiveMessageWaitTimeSeconds': self.__config.worker_wait_time
         }
 
         taskQueueName = '%s-task-%d' % (prefix, currentTime)
@@ -128,9 +144,11 @@ class WorkerManager(object):
 
 
     def execute(self, messageBody, messageAttributes=None, timeout=None):
+        """Enqueue a message in the task queue"""
         with self.__numWorkersLock:
             if self.__should_spawn_worker():
                 self.__spawn_new_worker()
+
         kwargs = {}
         if messageAttributes:
             kwargs['MessageAttributes'] = messageAttributes
@@ -168,10 +186,12 @@ class WorkerManager(object):
                    args=(functionName, workerId, workerArgs))
         t.daemon = True
         t.start()
-        with self.__numWorkersLock:
-            self.__numWorkers += 1
+        self.__numWorkers += 1
+        assert self.__numWorkers <= self.__config.max_workers,\
+            'Max worker limit exceeded'
 
     def __wait_for_worker(self, functionName, workerId, workerArgs):
+        """Wait for the worker to exit and the lambda to return"""
         try:
             response = _lambda.invoke(FunctionName=functionName,
                                       Payload=json.dumps(workerArgs))
@@ -188,10 +208,11 @@ class WorkerManager(object):
         finally:
             with self.__numWorkersLock:
                 self.__numWorkers -= 1
+                assert self.__numWorkers >= 0, 'Workers cannot be negative'
 
     def __result_daemon(self):
-        requiredAttributes = ['taskId']
-        requiredAttributes.extend(self.__config.result_attributes)
+        """Poll SQS result queue and set futures"""
+        requiredAttributes = ['All']
         resultQueueUrl = self.__resultQueue.url
         while True:
             # Don't poll SQS unless there is a task in progress
@@ -200,11 +221,11 @@ class WorkerManager(object):
                     self.__tasksInProgressCondition.wait()
 
             # Poll for new messages
+            messages = None
             try:
-                messages = _sqs.receive_message(
-                    QueueUrl=resultQueueUrl,
+                messages = self.__resultQueue.receive_message(
                     AttributeNames=requiredAttributes,
-                    MessageAttributeNames=10)
+                    MessageAttributeNames=MAX_SQS_REQUEST_MESSAGES)
                 for message in messages['messages']:
                     try:
                         taskId = message['MessageAttributes']['taskId']['StringValue']
@@ -219,18 +240,26 @@ class WorkerManager(object):
                     except Exception, e:
                         logger.error('Failed to parse message: %s', message)
                         logger.exception(e)
-                    finally:
-                        try:
-                            _sqs.delete_message(QueueUrl=resultQueueUrl,
-                                                ReceiptHandle=message['ReceiptHandle'])
-                        except Exception, e:
-                            logger.error('Failed to delete message: %s', message)
-                            logger.exception(e)
             except Exception, e:
                 logger.error('Error polling SQS')
                 logger.exception(e)
+            finally:
+                if messages is not None:
+                    try:
+                        result =self.__resultQueue.delete_messages(
+                            Entries=[{
+                                'Id': message['MessageId'],
+                                'ReceiptHandle': message['ReceiptHandle']
+                            } for message in messages]
+                        )
+                        if len(result['Successful']) != len(messages):
+                            raise Exception('Failed to delete all messages: %s'
+                                            % result['Failed'])
+                    except Exception, e:
+                        logger.exception(e)
 
     def __clean_up_aborted_tasks(self):
+        """Clean up all orphaned tasks"""
         with self.__tasksInProgressLock:
             for k, v in self.__tasksInProgress.items():
                 if v.isAborted: del self.__tasksInProgress[k]

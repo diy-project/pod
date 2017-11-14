@@ -1,5 +1,11 @@
 from abc import abstractmethod
-from collections import namedtuple
+
+from shared.proxy import ProxyResponse as __ProxyResponse
+from shared.proxy import proxy_single_request as __proxy_single_request
+
+# Re-expose shared module members
+ProxyResponse = __ProxyResponse
+proxy_single_request = __proxy_single_request
 
 # For non-CONNECT requests:
 #   [request] makes a request for a single URL
@@ -46,7 +52,3 @@ class ProxyInstance(object):
 
     def stream(self, *args):
         return self.streamProxy.stream(*args)
-
-
-
-ProxyResponse = namedtuple('Response', ['status_code', 'headers', 'content'])

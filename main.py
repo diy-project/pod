@@ -9,7 +9,7 @@ from fake_useragent import UserAgent
 from SocketServer import ThreadingMixIn
 from termcolor import colored
 
-from lib.constants import FILTERED_REQUEST_HEADERS, FILTERED_RESPONSE_HEADERS,\
+from lib.headers import FILTERED_REQUEST_HEADERS, FILTERED_RESPONSE_HEADERS,\
     DEFAULT_USER_AGENT
 from lib.proxy import ProxyInstance
 from lib.proxies.local import LocalProxy
@@ -121,7 +121,7 @@ def build_handler(proxy, verbose):
 
         def _print_response(self, response):
             print colored('url: %s' % self.path, 'white', 'on_yellow')
-            print 'status:', response.status_code
+            print 'status:', response.statusCode
             for header in response.headers:
                 print '  %s: %s' % (header, response.headers[header])
             print 'content-len:', len(response.content)
@@ -149,7 +149,7 @@ def build_handler(proxy, verbose):
             response = proxy.request(method, url, headers, requestBody)
             if verbose: self._print_response(response)
 
-            self.send_response(response.status_code)
+            self.send_response(response.statusCode)
             for header in response.headers:
                 if header in FILTERED_RESPONSE_HEADERS:
                     continue

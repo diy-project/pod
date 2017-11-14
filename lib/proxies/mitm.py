@@ -12,9 +12,9 @@ from random import SystemRandom
 from termcolor import colored
 from threading import Lock
 
-from ..constants import FILTERED_REQUEST_HEADERS, FILTERED_RESPONSE_HEADERS, \
+from lib.headers import FILTERED_REQUEST_HEADERS, FILTERED_RESPONSE_HEADERS, \
     DEFAULT_USER_AGENT
-from ..proxy import AbstractRequestProxy, AbstractStreamProxy
+from lib.proxy import AbstractRequestProxy, AbstractStreamProxy
 
 
 logging.basicConfig(level=logging.INFO)
@@ -29,7 +29,7 @@ def _print_mitm_request(method, url, headers):
 
 def _print_mitm_response(url, response):
     print colored('url: %s' % url, 'white', 'on_green')
-    print 'status:', response.status_code
+    print 'status:', response.statusCode
     for k, v in response.headers.iteritems():
         print '  %s: %s' % (k, v)
     print 'content-len:', len(response.content)
@@ -79,6 +79,8 @@ class MitmHttpsProxy(AbstractStreamProxy):
         return MitmHttpsProxy.Connection(host, port)
 
     def stream(self, cliSock, servConn):
+        assert isinstance(servConn, MitmHttpsProxy.Connection)
+
         certFile, keyFile = self.__get_cert_for_host(servConn.host)
         context = ssl.SSLContext(ssl.PROTOCOL_SSLv23)
         context.load_cert_chain(certFile, keyFile)
@@ -177,8 +179,8 @@ class MitmHttpsProxy(AbstractStreamProxy):
 
         responseLines = []
         responseLines.append('%s %d %s' %
-                             (httpVersion, response.status_code,
-                              responses[response.status_code]))
+                             (httpVersion, response.statusCode,
+                              responses[response.statusCode]))
         for header in response.headers:
             if header in FILTERED_RESPONSE_HEADERS:
                 continue

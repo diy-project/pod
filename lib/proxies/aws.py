@@ -6,8 +6,8 @@ import logging
 from random import SystemRandom
 from threading import Semaphore
 
-from ..proxy import AbstractRequestProxy, ProxyResponse
-from ..workers import LambdaSqsTaskConfig, WorkerManager
+from lib.proxy import AbstractRequestProxy, ProxyResponse
+from lib.workers import LambdaSqsTaskConfig, WorkerManager
 
 
 logging.basicConfig(level=logging.INFO)
@@ -46,14 +46,14 @@ class ShortLivedLambdaProxy(AbstractRequestProxy):
         if response['StatusCode'] != 200:
             logger.error('%s: status=%d', response['FunctionError'],
                          response['StatusCode'])
-            return ProxyResponse(status_code=500, headers={}, content='')
+            return ProxyResponse(statusCode=500, headers={}, content='')
 
         payload = json.loads(response['Payload'].read())
         if 'content64' in payload:
             content = base64.b64decode(payload['content64'])
         else:
             content = ''
-        return ProxyResponse(status_code=payload['statusCode'],
+        return ProxyResponse(statusCode=payload['statusCode'],
                              headers=payload['headers'],
                              content=content)
 
@@ -81,12 +81,7 @@ class LongLivedLambdaProxy(AbstractRequestProxy):
 
             @property
             def load_factor(self):
-                return 5
-
-            _result_attributes = ['body']
-            @property
-            def result_attributes(self):
-                return self._result_attributes
+                return 10
 
             def pre_invoke_callback(self, workerId, workerArgs):
                 logger.info('Starting worker: %d', workerId)
@@ -110,17 +105,16 @@ class LongLivedLambdaProxy(AbstractRequestProxy):
             'method': method,
             'url': url,
             'headers': headers,
-            'hasBody': body is None
         })
         result = self.workerManager.execute(messageBody, messageAttributes,
-                                              timeout=10)
+                                            timeout=10)
         if result is None:
-            return ProxyResponse(status_code=500, headers={}, content='')
+            return ProxyResponse(statusCode=500, headers={}, content='')
 
         content = result['MessageAttributes']['body']['BinaryValue']
         payload = json.loads(result['Body'])
 
-        return ProxyResponse(status_code=payload['statusCode'],
+        return ProxyResponse(statusCode=payload['statusCode'],
                              headers=payload['headers'],
                              content=content)
 
