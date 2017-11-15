@@ -1,6 +1,7 @@
 import boto3
 import json
 import logging
+import time
 
 from base64 import b64encode, b64decode
 from concurrent.futures import ThreadPoolExecutor
@@ -28,7 +29,7 @@ class ShortLivedLambdaProxy(AbstractRequestProxy):
         self.__lambdaRateSemaphore = Semaphore(maxParallelRequests)
 
     def request(self, method, url, headers, body):
-        logger.info('Proxying %s %s with Lamdba', method, url)
+        logger.debug('Proxying %s %s with Lamdba', method, url)
         args = {
             'method': method,
             'url': url,
@@ -91,19 +92,19 @@ class LongLivedLambdaProxy(AbstractRequestProxy):
                 return 4
 
             def pre_invoke_callback(self, workerId, workerArgs):
-                logger.info('Starting worker: %d', workerId)
+                logger.debug('Starting worker: %d', workerId)
                 workerArgs['longLived'] = True
                 if s3Bucket:
                     workerArgs['s3Bucket'] = s3Bucket
 
             def post_return_callback(self, workerId, workerResponse):
                 if workerResponse is not None:
-                    logger.info('Worker %d ran for %dms and proxied %d '
-                                'requests: Exit reason: %s',
-                                workerId,
-                                workerResponse['workerLifetime'],
-                                workerResponse['numRequestsProxied'],
-                                workerResponse['exitReason'])
+                    logger.debug('Worker %d ran for %dms and proxied %d '
+                                 'requests: Exit reason: %s',
+                                 workerId,
+                                 workerResponse['workerLifetime'],
+                                 workerResponse['numRequestsProxied'],
+                                 workerResponse['exitReason'])
 
         self.workerManager = WorkerManager(ProxyTask())
 
@@ -160,19 +161,26 @@ class HybridLambdaProxy(LongLivedLambdaProxy):
     def __init__(self, functions, *args):
         super(HybridLambdaProxy, self).__init__(functions, *args)
         self.__shortLivedProxy = ShortLivedLambdaProxy(functions, 5)
+        self.__lastRequestTime = 0
 
     def request(self, method, url, headers, body):
         if self.should_use_short_lived_proxy(method, url, headers, body):
-            logger.info('Using short proxy for: %s %s', method, url[:50])
+            logger.debug('Using short proxy for: %s %s', method, url[:50])
             return self.__shortLivedProxy.request(method, url, headers, body)
         else:
-            logger.info('Using long proxy for: %s %s', method, url[:50])
+            logger.debug('Using long proxy for: %s %s', method, url[:50])
             return super(HybridLambdaProxy, self).request(
                 method, url, headers, body)
 
     SHORT_LIVED_TYPES = ['.html', '.js', '.css', '.png', '.jpg', '.json']
 
     def should_use_short_lived_proxy(self, method, url, headers, body):
+        curTime = time.time()
+        try:
+            if curTime - self.__lastRequestTime > 0.5: return True
+        finally:
+            self.__lastRequestTime = curTime
+
         # TODO: maybe use header info for cross-origin
         if method.upper() != 'GET':
             return False

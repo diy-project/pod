@@ -172,7 +172,7 @@ class WorkerManager(object):
         with self.__tasksInProgressLock:
             self.__tasksInProgress[taskId] = taskFuture
             self.__numTasksInProgress = len(self.__tasksInProgress)
-            self.__tasksInProgressCondition.notify_all()
+            self.__tasksInProgressCondition.notify()
 
         result = taskFuture.get(timeout=timeout)
 
@@ -192,7 +192,7 @@ class WorkerManager(object):
 
     def __spawn_new_worker(self):
         workerId = random.getrandbits(32)
-        logger.info('Starting new worker: %d', workerId)
+        logger.debug('Starting new worker: %d', workerId)
         workerArgs = {
             'workerId': workerId,
             'taskQueue': self.__taskQueueName,
@@ -238,19 +238,19 @@ class WorkerManager(object):
                 taskFuture = self.__tasksInProgress.get(taskId)
 
             if taskFuture is None:
-                logger.info('No future for task: %s', taskId)
+                logger.debug('No future for task: %s', taskId)
                 return
 
             # Handle fragmented
             if result.isFragmented:
                 taskFuture._partial[result.fragmentId] = result
-                logger.info('Setting result: %s', taskId)
+                logger.debug('Setting result: %s', taskId)
                 if len(taskFuture._partial) == result.numFragments:
                     taskFuture.set([
                         taskFuture._partial[i] for i in xrange(result.numFragments)
                     ])
             else:
-                logger.info('Setting result: %s', taskId)
+                logger.debug('Setting result: %s', taskId)
                 taskFuture.set(result)
         except Exception, e:
             logger.error('Failed to parse message: %s', message)
@@ -268,13 +268,13 @@ class WorkerManager(object):
                     self.__tasksInProgressCondition.wait()
 
             # Poll for new messages
-            logger.info('Polling for new results')
+            logger.debug('Polling for new results')
             messages = None
             try:
                 messages = resultQueue.receive_messages(
                     MessageAttributeNames=requiredAttributes,
                     MaxNumberOfMessages=MAX_SQS_REQUEST_MESSAGES)
-                logger.info('Received %d messages', len(messages))
+                logger.debug('Received %d messages', len(messages))
                 self.__result_handler_pool.map(
                     self.__handle_single_result_message, messages)
             except Exception, e:
