@@ -48,19 +48,19 @@ def short_lived_handler(event, context):
 
 # Long-lived handler constants
 
-MIN_MILLIS_REMAINING = 30 * 1000
 MESSAGE_ATTRIBUTE_NAMES = ['All']
-MAX_NUM_SQS_MESSAGES = 10
-MAX_NUM_THREADS = 10
-MAX_QUEUED_REQUESTS = 25
-MAX_IDLE_POLLS = 1
-MAX_NUM_FRAGMENTS = 20
+MAX_NUM_SQS_MESSAGES = 5
+MIN_MILLIS_REMAINING = int(os.environ.get('MIN_MILLIS_REMAINING', 10 * 1000))
+MAX_QUEUED_REQUESTS = int(os.environ.get('MAX_QUEUED_REQUESTS', 10))
+MAX_IDLE_POLLS = int(os.environ.get('MAX_IDLE_POLLS', 1))
+MAX_NUM_FRAGMENTS = int(os.environ.get('MAX_NUM_FRAGMENTS', 20))
+MAX_NUM_THREADS = min(MAX_QUEUED_REQUESTS, 10)
 
 # This leaves 4KB
 MAX_PAYLOAD_PER_SQS_MESSAGE = 252 * 1024
 
 
-assert MAX_QUEUED_REQUESTS > MAX_NUM_SQS_MESSAGES, \
+assert MAX_QUEUED_REQUESTS >= MAX_NUM_SQS_MESSAGES, \
     'The maximum number of messages to fetch in one poll ' \
     'cannot be less than the max number of queued requests'
 

@@ -81,7 +81,7 @@ class LongLivedLambdaProxy(AbstractRequestProxy):
 
             @property
             def load_factor(self):
-                return 10
+                return 5
 
             def pre_invoke_callback(self, workerId, workerArgs):
                 logger.info('Starting worker: %d', workerId)
@@ -89,9 +89,11 @@ class LongLivedLambdaProxy(AbstractRequestProxy):
 
             def post_return_callback(self, workerId, workerResponse):
                 if workerResponse is not None:
-                    logger.info('Worker %d ran for %dms and proxied %d requests',
+                    logger.info('Worker %d ran for %dms and proxied %d '
+                                'requests: Exit reason: %s',
                                 workerId, workerResponse['workerLifetime'],
-                                workerResponse['numRequestsProxied'])
+                                workerResponse['numRequestsProxied'],
+                                workerResponse['exitReason'])
 
         self.workerManager = WorkerManager(ProxyTask())
 
@@ -134,4 +136,3 @@ class LongLivedLambdaProxy(AbstractRequestProxy):
         responseHeaders = payload['headers']
         return ProxyResponse(statusCode=statusCode, headers=responseHeaders,
                              content=content)
-

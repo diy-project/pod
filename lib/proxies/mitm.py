@@ -157,9 +157,9 @@ class MitmHttpsProxy(AbstractStreamProxy):
             if header == 'Content-Length':
                 contentLength = int(value)
             headers[header] = value
-        headers['Connection'] = 'close'
         if self.___overrideUserAgent:
             headers['User-Agent'] = DEFAULT_USER_AGENT
+        headers['Connection'] = 'keep-alive'
 
         # Read the rest of the body
         if contentLength > 0:
