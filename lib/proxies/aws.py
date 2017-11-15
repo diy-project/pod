@@ -181,7 +181,8 @@ class LongLivedLambdaProxy(AbstractRequestProxy):
 class HybridLambdaProxy(LongLivedLambdaProxy):
 
     def __init__(self, functions, numLambdas, s3Bucket, *args):
-        super(HybridLambdaProxy, self).__init__(functions, *args)
+        super(HybridLambdaProxy, self).__init__(functions, numLambdas,
+                                                s3Bucket, *args)
         self.__shortLivedProxy = ShortLivedLambdaProxy(functions,
                                                        numLambdas, s3Bucket)
         self.__lastRequestTime = 0
