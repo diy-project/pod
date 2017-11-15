@@ -136,3 +136,16 @@ class LongLivedLambdaProxy(AbstractRequestProxy):
         responseHeaders = payload['headers']
         return ProxyResponse(statusCode=statusCode, headers=responseHeaders,
                              content=content)
+
+class HybridLambdaProxy(LongLivedLambdaProxy):
+
+    def __init__(self, functions, *args):
+        super(HybridLambdaProxy, self).__init__(functions, *args)
+        self.__fastProxy = ShortLivedLambdaProxy(functions)
+
+    def request(self, method, url, headers, body):
+        if len(url) < 50:
+            return self.__fastProxy.request(method, url, headers, body)
+        else:
+            return super(HybridLambdaProxy, self).request(
+                method, url, headers, body)

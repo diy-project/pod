@@ -13,7 +13,8 @@ from lib.headers import FILTERED_REQUEST_HEADERS, FILTERED_RESPONSE_HEADERS,\
     DEFAULT_USER_AGENT
 from lib.proxy import ProxyInstance
 from lib.proxies.local import LocalProxy
-from lib.proxies.aws import ShortLivedLambdaProxy, LongLivedLambdaProxy
+from lib.proxies.aws import ShortLivedLambdaProxy, LongLivedLambdaProxy,\
+    HybridLambdaProxy
 from lib.proxies.mitm import MitmHttpsProxy
 
 logging.basicConfig(level=logging.INFO)
@@ -86,8 +87,10 @@ def build_lambda_proxy(functions, enableMitm,
         lambdaProxy = ShortLivedLambdaProxy(functions, maxLambdas)
     else:
         logger.info('Using long-lived Lambdas')
-        lambdaProxy = LongLivedLambdaProxy(functions, maxLambdas,
+        lambdaProxy = HybridLambdaProxy(functions, maxLambdas,
                                            verbose)
+        # lambdaProxy = LongLivedLambdaProxy(functions, maxLambdas,
+        #                                    verbose)
 
     if enableMitm:
         mitmProxy = MitmHttpsProxy(lambdaProxy,
