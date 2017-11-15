@@ -1,16 +1,18 @@
 """Proxy requests using AWS Lambda"""
 import base64
 import boto3
-import hashlib
 import json
+import os
 import time
 import traceback
 
 from concurrent.futures import ThreadPoolExecutor
-from StringIO import StringIO
-from threading import Semaphore, Event
+from threading import Semaphore
 
 from shared.proxy import proxy_single_request
+
+
+DEBUG = os.environ.get('VERBOSE', False)
 
 
 def log_request(method, url, headers):
@@ -25,7 +27,8 @@ def short_lived_handler(event, context):
     url = event['url']
     requestHeaders = event['headers']
 
-    log_request(method, url, requestHeaders)
+    if DEBUG:
+        log_request(method, url, requestHeaders)
 
     if 'body64' in event:
         requestBody = base64.b64decode(event['body64'])
@@ -51,6 +54,7 @@ MAX_NUM_SQS_MESSAGES = 10
 MAX_NUM_THREADS = 10
 MAX_QUEUED_REQUESTS = 25
 MAX_IDLE_POLLS = 1
+MAX_NUM_FRAGMENTS = 20
 
 # This leaves 4KB
 MAX_PAYLOAD_PER_SQS_MESSAGE = 252 * 1024
@@ -70,8 +74,49 @@ def _lazy_worker_init():
         sqs = boto3.resource('sqs')
 
 
-def send_response_as_fragments(response, taskId, responseQueue):
-    pass
+def send_response_as_fragments(response, taskId, responseQueue,
+                               messageBodyLen):
+    contentLen = len(response.content)
+    numFragments = contentLen / MAX_PAYLOAD_PER_SQS_MESSAGE + 1
+    if (contentLen % MAX_PAYLOAD_PER_SQS_MESSAGE + messageBodyLen >
+        MAX_PAYLOAD_PER_SQS_MESSAGE):
+        # Cannot pack headers into last message
+        numFragments += 1
+    if numFragments > MAX_NUM_FRAGMENTS:
+        raise Exception('Too many fragments: %d', numFragments)
+
+    if DEBUG:
+        print 'Sending response in %d chunks' % numFragments
+    for i in xrange(numFragments):
+        messageBody = {}
+        if i == numFragments - 1:
+            messageBody = {
+                'statusCode': response.statusCode,
+                'headers': response.headers,
+                'hasBody': True
+            }
+        messageAttributes = {
+            'taskId': {
+                'StringValue': taskId,
+                'DataType': 'String'
+            },
+            'numFragments': {
+                'StringValue': str(numFragments),
+                'DataType': 'Number'
+            },
+            'fragmentId': {
+                'StringValue': str(i),
+                'DataType': 'Number'
+            },
+        }
+        if i * MAX_PAYLOAD_PER_SQS_MESSAGE < contentLen:
+            baseIdx = i * MAX_PAYLOAD_PER_SQS_MESSAGE
+            messageAttributes['data'] = {
+                'BinaryValue': response.content[baseIdx:baseIdx+MAX_PAYLOAD_PER_SQS_MESSAGE],
+                'DataType': 'Binary'
+            }
+        responseQueue.send_message(MessageBody=json.dumps(messageBody),
+                                   MessageAttributes=messageAttributes)
 
 
 def process_single_message(message, responseQueue, queuedRequestsSemaphore):
@@ -85,7 +130,8 @@ def process_single_message(message, responseQueue, queuedRequestsSemaphore):
         requestHeaders = requestParams['headers']
         hasBody = requestParams['hasBody']
 
-        log_request(method, url, requestHeaders)
+        if DEBUG:
+            log_request(method, url, requestHeaders)
 
         if hasBody:
             requestBody = message.message_attributes['body']['BinaryValue']
@@ -108,7 +154,8 @@ def process_single_message(message, responseQueue, queuedRequestsSemaphore):
             }
         }
         messageBody = json.dumps(responseBody)
-        if len(messageBody) + len(response.content) <= MAX_PAYLOAD_PER_SQS_MESSAGE:
+        estimatedLength = len(messageBody) + len(response.content)
+        if estimatedLength <= MAX_PAYLOAD_PER_SQS_MESSAGE:
             if hasBody:
                 messageAttributes['body'] = {
                     'BinaryValue': response.content,
@@ -117,11 +164,10 @@ def process_single_message(message, responseQueue, queuedRequestsSemaphore):
             responseQueue.send_message(MessageBody=messageBody,
                                        MessageAttributes=messageAttributes)
         else:
-            send_response_as_fragments(response, taskId, responseQueue)
-
-    except:
-        print traceback.format_exc()
-        raise
+            send_response_as_fragments(response, taskId, responseQueue,
+                                       len(messageBody))
+    except Exception, e:
+        print traceback.format_exc(e)
     finally:
         queuedRequestsSemaphore.release()
 
@@ -135,9 +181,10 @@ def long_lived_handler(event, context):
     requestQueueName = event['taskQueue']
     responseQueueName = event['resultQueue']
 
-    print 'Running long-lived as: worker', workerId
-    print 'Consuming requests from:', requestQueueName
-    print 'Returning responses to:', responseQueueName
+    if DEBUG:
+        print 'Running long-lived as: worker', workerId
+        print 'Consuming requests from:', requestQueueName
+        print 'Returning responses to:', responseQueueName
 
     requestQueue = sqs.get_queue_by_name(QueueName=requestQueueName)
     responseQueue = sqs.get_queue_by_name(QueueName=responseQueueName)
@@ -155,7 +202,8 @@ def long_lived_handler(event, context):
         for _ in xrange(MAX_NUM_SQS_MESSAGES):
             queuedRequestsSemaphore.acquire()
 
-        print 'Polling SQS for new requests'
+        if DEBUG:
+            print 'Polling SQS for new requests'
         messages = requestQueue.receive_messages(
             MessageAttributeNames=MESSAGE_ATTRIBUTE_NAMES,
             MaxNumberOfMessages=MAX_NUM_SQS_MESSAGES)
@@ -165,7 +213,8 @@ def long_lived_handler(event, context):
             queuedRequestsSemaphore.release()
 
         if len(messages) > 0:
-            print 'Handling %d proxy requests' % len(messages)
+            if DEBUG:
+                print 'Handling %d proxy requests' % len(messages)
             for message in messages:
                 pool.submit(process_single_message, message,
                             responseQueue,
@@ -180,7 +229,8 @@ def long_lived_handler(event, context):
 
             idlePolls = 0
         else:
-            print 'No new requests from queue'
+            if DEBUG:
+                print 'No new requests from queue'
             idlePolls += 1
 
         if idlePolls > MAX_IDLE_POLLS:
@@ -223,6 +273,7 @@ def main(queueId):
 
 if __name__ == '__main__':
     import sys
+    DEBUG = True
     if len(sys.argv) < 2:
         print 'Usage: python proxy.py queueId'
         sys.exit(1)

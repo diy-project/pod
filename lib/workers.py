@@ -4,9 +4,9 @@ import json
 import logging
 import time
 
-from abc import abstractmethod, abstractproperty
+from abc import abstractproperty
 from random import SystemRandom
-from threading import Condition, Event, Lock, Thread, Timer
+from threading import Condition, Event, Lock, Thread
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__file__)
@@ -35,6 +35,7 @@ class Future(object):
         self.__done = Event()
         self.__result = None
         self.__aborted = False
+        self._partial = {}
 
     def get(self, timeout=None):
         self.__done.wait(timeout)
@@ -227,6 +228,30 @@ class WorkerManager(object):
                 self.__numWorkers -= 1
                 assert self.__numWorkers >= 0, 'Workers cannot be negative'
 
+    def __handle_single_result_message(self, message):
+        try:
+            taskId = message.message_attributes['taskId']['StringValue']
+            with self.__tasksInProgressLock:
+                taskFuture = self.__tasksInProgress.get(taskId)
+                if taskFuture is None:
+                    logger.info('No future for task: %s', taskId)
+                    return
+
+                # Handle fragmented
+                if 'fragmentId' in message.message_attributes:
+                    fragmentId = int(message.message_attributes['fragmentId']['StringValue'])
+                    numFragments = int(message.message_attributes['numFragments']['StringValue'])
+                    taskFuture._partial[fragmentId] = message
+                    logger.info('Setting result: %s', taskId)
+                    if len(taskFuture._partial) == numFragments:
+                        taskFuture.set([taskFuture._partial[i] for i in xrange(numFragments)])
+                else:
+                    logger.info('Setting result: %s', taskId)
+                    taskFuture.set(message)
+        except Exception, e:
+            logger.error('Failed to parse message: %s', message)
+            logger.exception(e)
+
     def __result_daemon(self):
         """Poll SQS result queue and set futures"""
         requiredAttributes = ['All']
@@ -246,18 +271,7 @@ class WorkerManager(object):
                     MaxNumberOfMessages=MAX_SQS_REQUEST_MESSAGES)
                 logger.info('Received %d messages', len(messages))
                 for message in messages:
-                    try:
-                        taskId = message.message_attributes['taskId']['StringValue']
-                        with self.__tasksInProgressLock:
-                            taskFuture = self.__tasksInProgress.get(taskId)
-                            if taskFuture is None:
-                                logger.info('No future for task: %s', taskId)
-                            else:
-                                logger.info('Setting result: %s', taskId)
-                                taskFuture.set(message)
-                    except Exception, e:
-                        logger.error('Failed to parse message: %s', message)
-                        logger.exception(e)
+                    self.__handle_single_result_message(message)
             except Exception, e:
                 logger.error('Error polling SQS')
                 logger.exception(e)

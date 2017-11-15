@@ -4,8 +4,7 @@ import json
 import logging
 
 from random import SystemRandom
-from StringIO import StringIO
-from threading import Semaphore, Event
+from threading import Semaphore
 
 from lib.proxy import AbstractRequestProxy, ProxyResponse
 from lib.workers import LambdaSqsTaskConfig, WorkerManager
@@ -115,14 +114,24 @@ class LongLivedLambdaProxy(AbstractRequestProxy):
         if result is None:
             return ProxyResponse(statusCode=500, headers={}, content='')
 
-        payload = json.loads(result.body)
-        responseHeaders = payload['headers']
-        if payload['hasBody']:
-            content = result.message_attributes['body']['BinaryValue']
+        if type(result) is list:
+            # Fragmented response
+            payload = {}
+            dataChunks = []
+            for message in result:
+                if 'data' in message.message_attributes:
+                    dataChunks.append(message.message_attributes['data']['BinaryValue'])
+                    payload.update(json.loads(message.body))
+            content = b''.join(dataChunks)
         else:
-            content = b''
-
-        return ProxyResponse(statusCode=payload['statusCode'],
-                             headers=responseHeaders,
+            # Single message
+            payload = json.loads(result.body)
+            if payload['hasBody']:
+                content = result.message_attributes['body']['BinaryValue']
+            else:
+                content = b''
+        statusCode = payload['statusCode']
+        responseHeaders = payload['headers']
+        return ProxyResponse(statusCode=statusCode, headers=responseHeaders,
                              content=content)
 
