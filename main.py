@@ -97,7 +97,7 @@ def build_lambda_proxy(args):
 
     if lambdaType == 'short':
         logger.info('Using short-lived lambdas')
-        lambdaProxy = ShortLivedLambdaProxy(functions, maxLambdas)
+        lambdaProxy = ShortLivedLambdaProxy(functions, maxLambdas, s3Bucket)
     elif lambdaType == 'long':
         logger.info('Using long-lived lambdas')
         lambdaProxy = LongLivedLambdaProxy(functions, maxLambdas,

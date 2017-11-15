@@ -24,9 +24,22 @@ class ShortLivedLambdaProxy(AbstractRequestProxy):
 
     __lambda = boto3.client('lambda')
 
-    def __init__(self, functions, maxParallelRequests):
+    def __init__(self, functions, maxParallelRequests, s3Bucket):
         self.__functions = functions
         self.__lambdaRateSemaphore = Semaphore(maxParallelRequests)
+        self.__s3Bucket = s3Bucket
+        if s3Bucket is not None:
+            self.__s3 = boto3.client('s3')
+            self.__s3DeletePool = ThreadPoolExecutor(1)
+
+    def __delete_object_from_s3(self, key):
+        self.__s3.delete_object(Bucket=self.__s3Bucket, Key=key)
+
+    def __load_object_from_s3(self, key):
+        result = self.__s3.get_object(Bucket=self.__s3Bucket, Key=key)
+        ret = result['Body'].read()
+        self.__s3DeletePool.submit(self.__delete_object_from_s3, key)
+        return ret
 
     def request(self, method, url, headers, body):
         logger.debug('Proxying %s %s with Lamdba', method, url)
@@ -37,6 +50,8 @@ class ShortLivedLambdaProxy(AbstractRequestProxy):
         }
         if body is not None:
             args['body64'] = b64encode(body)
+        if self.__s3Bucket is not None:
+            args['s3Bucket'] = self.__s3Bucket
 
         self.__lambdaRateSemaphore.acquire()
         try:
@@ -51,17 +66,24 @@ class ShortLivedLambdaProxy(AbstractRequestProxy):
                          response['StatusCode'])
             return ProxyResponse(statusCode=500, headers={}, content='')
 
-        # TODO: this step sometimes fails
+        if 'FunctionError' in response:
+            logger.error('%s error: %s', response['FunctionError'],
+                         response['Payload'].read())
+            return ProxyResponse(statusCode=500, headers={}, content='')
+
         payload = json.loads(response['Payload'].read())
         statusCode = payload['statusCode']
         headers = payload['headers']
         if 'content64' in payload:
             content = b64decode(payload['content64'])
+        elif 's3Key' in payload:
+            content = self.__load_object_from_s3(payload['s3Key'])
         else:
             content = b''
         return ProxyResponse(statusCode=statusCode,
                              headers=headers,
                              content=content)
+
 
 class LongLivedLambdaProxy(AbstractRequestProxy):
     """Return a function that queues requests in SQS"""
@@ -158,9 +180,10 @@ class LongLivedLambdaProxy(AbstractRequestProxy):
 
 class HybridLambdaProxy(LongLivedLambdaProxy):
 
-    def __init__(self, functions, *args):
+    def __init__(self, functions, numLambdas, s3Bucket, *args):
         super(HybridLambdaProxy, self).__init__(functions, *args)
-        self.__shortLivedProxy = ShortLivedLambdaProxy(functions, 5)
+        self.__shortLivedProxy = ShortLivedLambdaProxy(functions,
+                                                       numLambdas, s3Bucket)
         self.__lastRequestTime = 0
 
     def request(self, method, url, headers, body):

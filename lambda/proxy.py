@@ -22,11 +22,16 @@ def log_request(method, url, headers):
         print '  %s: %s' % (header, value)
 
 
+# The body can be up to 6MB, this leaves a bit of lee-way
+MAX_LAMBDA_BODY_PAYLOAD_SIZE = 5 * 1024 * 1024
+
+
 def short_lived_handler(event, context):
     """Handle a single request and return it immediately"""
     method = event['method']
     url = event['url']
     requestHeaders = event['headers']
+    s3BucketName = event.get('s3Bucket', None)
 
     if DEBUG: log_request(method, url, requestHeaders)
 
@@ -41,8 +46,20 @@ def short_lived_handler(event, context):
         'statusCode': response.statusCode,
         'headers': response.headers
     }
+
     if response.content:
-        ret['content64'] = b64encode(response.content)
+        content64 = b64encode(response.content)
+        if not s3BucketName or len(content64) < MAX_LAMBDA_BODY_PAYLOAD_SIZE:
+            ret['content64'] = content64
+        else:
+            md5 = hashlib.md5()
+            md5.update(response.content)
+            key = md5.hexdigest()
+            s3Bucket = boto3.resource('s3').Bucket(s3BucketName)
+            s3Bucket.put_object(Key=key, Body=response.content,
+                                StorageClass='REDUCED_REDUNDANCY')
+            ret['s3Key'] = key
+
     return ret
 
 
@@ -193,7 +210,6 @@ def long_lived_handler(event, context):
         s3Bucket = boto3.resource('s3').Bucket(s3BucketName)
         if DEBUG:
             print 'Serving large responses from s3:', s3BucketName
-
 
     requestQueue = sqs.get_queue_by_name(QueueName=requestQueueName)
     responseQueue = sqs.get_queue_by_name(QueueName=responseQueueName)
