@@ -36,10 +36,10 @@ class SqsMessage(object):
     def has_attribute(self, name):
         return name in self._messageAttributes
 
-    def get_string_attribute(self, name, cast=int):
+    def get_string_attribute(self, name):
         return self._messageAttributes[name]['StringValue']
 
-    def get_binary_attribute(self, name, cast=int):
+    def get_binary_attribute(self, name):
         return self._messageAttributes[name]['BinaryValue']
 
     def get_number_attribute(self, name, cast=int):
