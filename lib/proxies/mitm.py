@@ -189,6 +189,9 @@ class MitmHttpsProxy(AbstractStreamProxy):
         responseLines.append('Connection: close')
         responseLines.append('')
         responseLines.append('')
-        cliSslSock.sendall('\r\n'.join(responseLines))
-        if response.content:
-            cliSslSock.sendall(response.content)
+        try:
+            cliSslSock.sendall('\r\n'.join(responseLines))
+            if response.content:
+                cliSslSock.sendall(response.content)
+        except socket.error, e:
+            logger.warn('Error sending response: %s', e)
