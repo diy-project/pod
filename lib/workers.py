@@ -173,7 +173,6 @@ class WorkerManager(object):
             self.__tasksInProgressCondition.notify()
 
         result = taskFuture.get(timeout=timeout)
-        print result
 
         with self.__tasksInProgressLock:
             del self.__tasksInProgress[taskId]

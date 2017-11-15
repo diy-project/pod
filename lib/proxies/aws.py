@@ -5,6 +5,7 @@ import logging
 
 from random import SystemRandom
 from threading import Semaphore
+from urlparse import urlparse
 
 from lib.proxy import AbstractRequestProxy, ProxyResponse
 from lib.workers import LambdaSqsTaskConfig, WorkerManager
@@ -141,11 +142,25 @@ class HybridLambdaProxy(LongLivedLambdaProxy):
 
     def __init__(self, functions, *args):
         super(HybridLambdaProxy, self).__init__(functions, *args)
-        self.__fastProxy = ShortLivedLambdaProxy(functions)
+        self.__shortLivedProxy = ShortLivedLambdaProxy(functions)
 
     def request(self, method, url, headers, body):
-        if len(url) < 50:
-            return self.__fastProxy.request(method, url, headers, body)
+        if self.should_use_short_lived_proxy(method, url, headers, body):
+            return self.__shortLivedProxy.request(method, url, headers, body)
         else:
             return super(HybridLambdaProxy, self).request(
                 method, url, headers, body)
+
+    SHORT_LIVED_TYPES = ['.html', '.js', '.css', '.png', '.jpg', '.json']
+
+    def should_use_short_lived_proxy(self, method, url, headers, body):
+        if method.upper() != 'GET':
+            return False
+        parsedUrl = urlparse(url)
+        if len(parsedUrl.path.split('/')) < 3:
+            return True
+        if len(parsedUrl.query) > 10:
+            return False
+        if any(x in parsedUrl.path for x in HybridLambdaProxy.SHORT_LIVED_TYPES):
+            return True
+        return False

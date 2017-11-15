@@ -42,9 +42,10 @@ def get_args():
     parser.add_argument('--function', '-f', dest='functions',
                         action='append', default=['simple-http-proxy'],
                         help='Lambda functions by name or ARN')
-    parser.add_argument('--short-lived-lambdas', '-sll',
-                        dest='enableShortLivedLambdas', action='store_true',
-                        help='Make each lambda a single request/response')
+    parser.add_argument('--lambda-type', dest='lambdaType', type=str,
+                        choices=['short', 'long', 'hybrid'],
+                        default='hybrid',
+                        help='Type of lambda workers to use')
     parser.add_argument('--max-lambdas', '-t', type=int,
                         default=DEFAULT_MAX_LAMBDAS, dest='maxLambdas',
                         help='Max number of lambdas running at any time')
@@ -72,9 +73,8 @@ def build_local_proxy(enableMitm, verbose):
         return ProxyInstance(requestProxy=localProxy, streamProxy=localProxy)
 
 
-def build_lambda_proxy(functions, enableMitm,
-                       enableShortLivedLambdas,
-                       maxLambdas, verbose):
+def build_lambda_proxy(functions, enableMitm, lambdaType, maxLambdas,
+                       verbose):
     """Request the resource using lambda"""
 
     logger.info('Running the proxy with Lambda')
@@ -82,15 +82,17 @@ def build_lambda_proxy(functions, enableMitm,
         logger.fatal('No functions specified')
         sys.exit(-1)
 
-    if enableShortLivedLambdas:
+    if lambdaType == 'short':
         logger.info('Using short-lived Lambdas')
         lambdaProxy = ShortLivedLambdaProxy(functions, maxLambdas)
-    else:
+    elif lambdaType == 'long':
         logger.info('Using long-lived Lambdas')
+        lambdaProxy = LongLivedLambdaProxy(functions, maxLambdas,
+                                           verbose)
+    else:
+        logger.info('Using hybrid Lambdas')
         lambdaProxy = HybridLambdaProxy(functions, maxLambdas,
                                            verbose)
-        # lambdaProxy = LongLivedLambdaProxy(functions, maxLambdas,
-        #                                    verbose)
 
     if enableMitm:
         mitmProxy = MitmHttpsProxy(lambdaProxy,
@@ -204,7 +206,7 @@ class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
 def main(host, port,
          functions=None,
          enableMitm=False,
-         enableShortLivedLambdas=False,
+         lambdaType='short',
          maxLambdas=DEFAULT_MAX_LAMBDAS,
          runLocal=False,
          verbose=False):
@@ -216,7 +218,7 @@ def main(host, port,
             functions=functions,
             enableMitm=enableMitm,
             maxLambdas=maxLambdas,
-            enableShortLivedLambdas=enableShortLivedLambdas,
+            lambdaType=lambdaType,
             verbose=verbose)
 
     handler = build_handler(proxy, verbose=verbose)
