@@ -50,13 +50,14 @@ class MitmHttpsProxy(AbstractStreamProxy):
         def __str__(self):
             return self.host + ':' + self.port
 
-    __certCache = {}
-    __certCacheLock = Lock()
     __secureRandom = SystemRandom()
 
     def __init__(self, requestProxy, certfile, keyfile,
                  overrideUserAgent=False, verbose=False):
         assert isinstance(requestProxy, AbstractRequestProxy)
+
+        self.__certCache = {}
+        self.__certCacheLock = Lock()
 
         # Config
         self.__verbose = verbose

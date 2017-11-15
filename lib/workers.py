@@ -2,11 +2,18 @@ import atexit
 import boto3
 import json
 import logging
+import random
 import time
 
 from abc import abstractproperty
-from random import SystemRandom
+from concurrent.futures import ThreadPoolExecutor
 from threading import Condition, Event, Lock, Thread
+
+from shared.workers import LambdaSqsResult, LambdaSqsTask
+
+# Re-expose these classes
+LambdaSqsResult = LambdaSqsResult
+LambdaSqsTask = LambdaSqsTask
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__file__)
@@ -14,19 +21,8 @@ logger = logging.getLogger(__file__)
 
 MAX_SQS_REQUEST_MESSAGES = 10
 
-
-_moduleReady = False
-_secureRandom = None
-_lambda = None
-_sqs = None
-def _lazy_module_init():
-    global _moduleReady
-    if not _moduleReady:
-        global _secureRandom, _lambda, _sqs
-        _secureRandom = SystemRandom()
-        _lambda = boto3.client('lambda')
-        _sqs = boto3.resource('sqs')
-        _moduleReady = True
+DEFAULT_POLLING_THREADS = 3
+DEFAULT_HANDLER_THREADS = 3
 
 
 class Future(object):
@@ -35,6 +31,7 @@ class Future(object):
         self.__done = Event()
         self.__result = None
         self.__aborted = False
+
         self._partial = {}
 
     def get(self, timeout=None):
@@ -101,9 +98,9 @@ class LambdaSqsTaskConfig(object):
 class WorkerManager(object):
 
     def __init__(self, taskConfig):
-        _lazy_module_init()
-
         self.__config = taskConfig
+
+        self.__lambda = boto3.client('lambda')
 
         self.__numWorkers = 0
         self.__numWorkersLock = Lock()
@@ -117,12 +114,17 @@ class WorkerManager(object):
         self.__init_message_queues()
 
         # Start result fetcher thread
-        rt = Thread(target=self.__result_daemon)
-        rt.daemon = True
-        rt.start()
+        self.__result_handler_pool = ThreadPoolExecutor(DEFAULT_POLLING_THREADS)
+        for i in xrange(DEFAULT_POLLING_THREADS):
+            rt = Thread(target=self.__result_daemon)
+            rt.daemon = True
+            rt.start()
+
 
     def __init_message_queues(self):
         """Setup the message queues"""
+        sqs = boto3.resource('sqs')
+
         currentTime = time.time()
         taskQueueAttributes = {
             'MessageRetentionPeriod': str(self.__config.message_retention_period),
@@ -130,7 +132,7 @@ class WorkerManager(object):
         }
         taskQueueName = '%s_task_%d' % (self.__config.queue_prefix, currentTime)
         self.__taskQueueName = taskQueueName
-        taskQueue = _sqs.create_queue(
+        taskQueue = sqs.create_queue(
             QueueName=taskQueueName,
             Attributes=taskQueueAttributes)
         self.__taskQueue = taskQueue
@@ -143,25 +145,25 @@ class WorkerManager(object):
         }
         resultQueueName = '%s_result_%d' % (self.__config.queue_prefix, currentTime)
         self.__resultQueueName = resultQueueName
-        resultQueue = _sqs.create_queue(
+        resultQueue = sqs.create_queue(
             QueueName=resultQueueName,
             Attributes=resultQueueAttributes)
-        self.__resultQueue = resultQueue
         atexit.register(lambda: resultQueue.delete())
         logger.info('Created result queue: %s', resultQueueName)
 
 
-    def execute(self, messageBody, messageAttributes=None, timeout=None):
+    def execute(self, task, timeout=None):
         """Enqueue a message in the task queue"""
+        assert isinstance(task, LambdaSqsTask)
         with self.__numWorkersLock:
             if self.__should_spawn_worker():
                 self.__spawn_new_worker()
 
         kwargs = {}
-        if messageAttributes:
-            kwargs['MessageAttributes'] = messageAttributes
+        if task.messageAttributes:
+            kwargs['MessageAttributes'] = task.messageAttributes
         messageStatus = self.__taskQueue.send_message(
-            MessageBody=messageBody, **kwargs)
+            MessageBody=task.body, **kwargs)
 
         # Use the MessageId as taskId
         taskId = messageStatus['MessageId']
@@ -170,7 +172,7 @@ class WorkerManager(object):
         with self.__tasksInProgressLock:
             self.__tasksInProgress[taskId] = taskFuture
             self.__numTasksInProgress = len(self.__tasksInProgress)
-            self.__tasksInProgressCondition.notify()
+            self.__tasksInProgressCondition.notify_all()
 
         result = taskFuture.get(timeout=timeout)
 
@@ -189,7 +191,7 @@ class WorkerManager(object):
                  self.__numWorkers * self.__config.load_factor))
 
     def __spawn_new_worker(self):
-        workerId = _secureRandom.getrandbits(32)
+        workerId = random.getrandbits(32)
         logger.info('Starting new worker: %d', workerId)
         workerArgs = {
             'workerId': workerId,
@@ -209,8 +211,9 @@ class WorkerManager(object):
     def __wait_for_worker(self, functionName, workerId, workerArgs):
         """Wait for the worker to exit and the lambda to return"""
         try:
-            response = _lambda.invoke(FunctionName=functionName,
-                                      Payload=json.dumps(workerArgs))
+            response = self.__lambda.invoke(
+                FunctionName=functionName,
+                Payload=json.dumps(workerArgs))
             if response['StatusCode'] != 200:
                 logger.error('Worker %d exited unexpectedly: %s: status=%d',
                              workerId,
@@ -229,24 +232,26 @@ class WorkerManager(object):
 
     def __handle_single_result_message(self, message):
         try:
-            taskId = message.message_attributes['taskId']['StringValue']
+            result = LambdaSqsResult.from_message(message)
+            taskId = result.taskId
             with self.__tasksInProgressLock:
                 taskFuture = self.__tasksInProgress.get(taskId)
-                if taskFuture is None:
-                    logger.info('No future for task: %s', taskId)
-                    return
 
-                # Handle fragmented
-                if 'fragmentId' in message.message_attributes:
-                    fragmentId = int(message.message_attributes['fragmentId']['StringValue'])
-                    numFragments = int(message.message_attributes['numFragments']['StringValue'])
-                    taskFuture._partial[fragmentId] = message
-                    logger.info('Setting result: %s', taskId)
-                    if len(taskFuture._partial) == numFragments:
-                        taskFuture.set([taskFuture._partial[i] for i in xrange(numFragments)])
-                else:
-                    logger.info('Setting result: %s', taskId)
-                    taskFuture.set(message)
+            if taskFuture is None:
+                logger.info('No future for task: %s', taskId)
+                return
+
+            # Handle fragmented
+            if result.isFragmented:
+                taskFuture._partial[result.fragmentId] = result
+                logger.info('Setting result: %s', taskId)
+                if len(taskFuture._partial) == result.numFragments:
+                    taskFuture.set([
+                        taskFuture._partial[i] for i in xrange(result.numFragments)
+                    ])
+            else:
+                logger.info('Setting result: %s', taskId)
+                taskFuture.set(result)
         except Exception, e:
             logger.error('Failed to parse message: %s', message)
             logger.exception(e)
@@ -254,7 +259,8 @@ class WorkerManager(object):
     def __result_daemon(self):
         """Poll SQS result queue and set futures"""
         requiredAttributes = ['All']
-        resultQueue = self.__resultQueue
+        sqs = boto3.resource('sqs')
+        resultQueue = sqs.get_queue_by_name(QueueName=self.__resultQueueName)
         while True:
             # Don't poll SQS unless there is a task in progress
             with self.__tasksInProgressLock:
@@ -269,8 +275,8 @@ class WorkerManager(object):
                     MessageAttributeNames=requiredAttributes,
                     MaxNumberOfMessages=MAX_SQS_REQUEST_MESSAGES)
                 logger.info('Received %d messages', len(messages))
-                for message in messages:
-                    self.__handle_single_result_message(message)
+                self.__result_handler_pool.map(
+                    self.__handle_single_result_message, messages)
             except Exception, e:
                 logger.error('Error polling SQS')
                 logger.exception(e)

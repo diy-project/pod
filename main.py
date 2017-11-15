@@ -42,11 +42,20 @@ def get_args():
     parser.add_argument('--function', '-f', dest='functions',
                         action='append', default=['simple-http-proxy'],
                         help='Lambda functions by name or ARN')
-    parser.add_argument('--lambda-type', dest='lambdaType', type=str,
+
+    parser.add_argument('--lambda-type', '-t', dest='lambdaType',
                         choices=['short', 'long', 'hybrid'],
-                        default='hybrid',
+                        default='hybrid', type=str,
                         help='Type of lambda workers to use')
-    parser.add_argument('--max-lambdas', '-t', type=int,
+
+    parser.add_argument('--large-transport', '-xl', dest='largeTransport',
+                        choices=['s3', 'sqs'], default='sqs', type=str,
+                        help='Option for long-lived lambdas to return '
+                             'messages larger than the SQS payload')
+    parser.add_argument('--s3-bucket', '-s3', dest='s3Bucket', type=str,
+                        help='s3Bucket to use for large file transport')
+
+    parser.add_argument('--max-lambdas', '-j', type=int,
                         default=DEFAULT_MAX_LAMBDAS, dest='maxLambdas',
                         help='Max number of lambdas running at any time')
     parser.add_argument('--enable-mitm', '-m', action='store_true',
@@ -56,45 +65,49 @@ def get_args():
     return parser.parse_args()
 
 
-def build_local_proxy(enableMitm, verbose):
+def build_local_proxy(args):
     """Request the resource locally"""
 
     logger.warn('Running the proxy locally. This provides no privacy!')
 
     localProxy = LocalProxy()
-    if enableMitm:
+    if args.enableMitm:
         logger.warn('MITM proxy enabled. This is experimental!')
         mitmProxy = MitmHttpsProxy(localProxy,
                                    MITM_CERT_PATH, MITM_KEY_PATH,
                                    overrideUserAgent=OVERRIDE_USER_AGENT,
-                                   verbose=verbose)
+                                   verbose=args.verbose)
         return ProxyInstance(requestProxy=localProxy, streamProxy=mitmProxy)
     else:
         return ProxyInstance(requestProxy=localProxy, streamProxy=localProxy)
 
 
-def build_lambda_proxy(functions, enableMitm, lambdaType, maxLambdas,
-                       verbose):
+def build_lambda_proxy(args):
     """Request the resource using lambda"""
+    functions = args.functions
+    lambdaType = args.lambdaType
+    maxLambdas = args.maxLambdas
+    s3Bucket = args.s3Bucket
+    verbose = args.verbose
 
-    logger.info('Running the proxy with Lambda')
+    logger.info('Running the proxy with lambda')
     if not functions:
         logger.fatal('No functions specified')
         sys.exit(-1)
 
     if lambdaType == 'short':
-        logger.info('Using short-lived Lambdas')
+        logger.info('Using short-lived lambdas')
         lambdaProxy = ShortLivedLambdaProxy(functions, maxLambdas)
     elif lambdaType == 'long':
-        logger.info('Using long-lived Lambdas')
+        logger.info('Using long-lived lambdas')
         lambdaProxy = LongLivedLambdaProxy(functions, maxLambdas,
-                                           verbose)
+                                           s3Bucket, verbose)
     else:
-        logger.info('Using hybrid Lambdas')
+        logger.info('Using hybrid lambdas')
         lambdaProxy = HybridLambdaProxy(functions, maxLambdas,
-                                           verbose)
+                                        s3Bucket, verbose)
 
-    if enableMitm:
+    if args.enableMitm:
         mitmProxy = MitmHttpsProxy(lambdaProxy,
                                    MITM_CERT_PATH, MITM_KEY_PATH,
                                    overrideUserAgent=OVERRIDE_USER_AGENT,
@@ -203,29 +216,18 @@ class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
     """Handle requests in a separate thread."""
 
 
-def main(host, port,
-         functions=None,
-         enableMitm=False,
-         lambdaType='short',
-         maxLambdas=DEFAULT_MAX_LAMBDAS,
-         runLocal=False,
-         verbose=False):
-
-    if runLocal:
-        proxy = build_local_proxy(enableMitm, verbose=verbose)
+def main(host, port, args=None):
+    if args.runLocal:
+        proxy = build_local_proxy(args)
     else:
-        proxy = build_lambda_proxy(
-            functions=functions,
-            enableMitm=enableMitm,
-            maxLambdas=maxLambdas,
-            lambdaType=lambdaType,
-            verbose=verbose)
+        proxy = build_lambda_proxy(args)
 
-    handler = build_handler(proxy, verbose=verbose)
+    handler = build_handler(proxy, verbose=args.verbose)
     server = ThreadedHTTPServer((host, port), handler)
     print 'Starting server, use <Ctrl-C> to stop'
     server.serve_forever()
 
 
 if __name__ == '__main__':
-    main(**vars(get_args()))
+    args = get_args()
+    main(args.host, args.port, args)
