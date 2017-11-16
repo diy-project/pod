@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import re
+import sys
 import time
 
 from abc import abstractproperty
@@ -33,6 +34,10 @@ class _AbstractTimeModel(_AbstractModel):
     def time(self):
         return 0
 
+    @abstractproperty
+    def mean(self):
+        return 0.0
+
 
 class _AbstractDataModel(_AbstractModel):
 
@@ -54,7 +59,6 @@ class Stats(object):
 
     def __init__(self):
         self.__models = OrderedDict()
-        self.__startDate = datetime.now()
 
     def register_model(self, name, model):
         assert isinstance(model, _AbstractModel)
@@ -65,14 +69,7 @@ class Stats(object):
 
     def _get_live_summary(self, minRefreshRate, colors=DEFAULT_COLORS):
         sio = StringIO()
-        td = datetime.now() - self.__startDate
         try:
-            print >> sio, colored('Displaying stats for %dd %dh %dm %ds (%ds refresh)' %
-                                  (td.days, td.seconds / 3600,
-                                  (td.seconds % 3600) / 60,
-                                   ((td.seconds % 60) / minRefreshRate) * minRefreshRate,
-                                   minRefreshRate),
-                                  'white', 'on_green')
             numColors = len(colors)
             totalCost = 0.0
             for i, name in enumerate(self.__models):
@@ -88,6 +85,7 @@ class Stats(object):
                     values.append('cost: ${:8f}'.format(modelCost))
                 if isinstance(model, _AbstractTimeModel):
                     values.append('time: {:8d}s'.format(int(model.time) / 1000))
+                    values.append('mean: {:7d}ms'.format(int(model.mean)))
                 if isinstance(model, _AbstractDataModel):
                     MBDown = float(model.bytesDown) / MEGABYTE
                     MBUp = float(model.bytesUp) / MEGABYTE
@@ -107,6 +105,7 @@ class Stats(object):
     def start_live_summary(self, refreshRate=1, minRefreshRate=15):
         this = self
         def live_summary():
+            startDate = datetime.now()
             lastRefresh = None
             prevSummary = None
             while True:
@@ -114,11 +113,20 @@ class Stats(object):
                 summary = this._get_live_summary(minRefreshRate)
                 if summary != prevSummary or lastRefresh >= minRefreshRate:
                     _cls()
-                    print summary,
+                    sys.stdout.write(summary)
                     lastRefresh = 0
                 else:
                     lastRefresh += 1
                 prevSummary = summary
+
+                td = datetime.now() - startDate
+                sys.stdout.write(colored(
+                    'Displaying stats for %dd %02dh %02dm %02ds\r' %
+                    (td.days, td.seconds / 3600,
+                     (td.seconds % 3600) / 60,
+                     td.seconds % 60),
+                    'white', 'on_green'),)
+                sys.stdout.flush()
         t = Thread(target=live_summary)
         t.daemon = True
         t.start()
@@ -150,6 +158,11 @@ class LambdaStatsModel(_AbstractCostModel, _AbstractTimeModel):
     @property
     def time(self):
         return self._totalMillis
+
+    @property
+    def mean(self):
+        if self._totalRequests == 0: return 0.0
+        return float(self._totalMillis) / self._totalRequests
 
     class Request(object):
 
