@@ -1,20 +1,17 @@
 import boto3
+import hashlib
 import json
 import logging
-import sys
 import time
-
 from base64 import b64encode, b64decode
-from collections import namedtuple
-from concurrent.futures import ThreadPoolExecutor
 from random import SystemRandom
 from threading import Semaphore
 from urlparse import urlparse
 
+from concurrent.futures import ThreadPoolExecutor
 from lib.proxy import AbstractRequestProxy, ProxyResponse
 from lib.stats import LambdaStatsModel, S3StatsModel
 from lib.workers import LambdaSqsTaskConfig, LambdaSqsTask, WorkerManager
-
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +27,8 @@ class ShortLivedLambdaProxy(AbstractRequestProxy):
     """Invoke a lambda for each request"""
 
     __lambda = boto3.client('lambda')
+
+    MAX_BODY_LEN = int(5.8 * 1024 * 1024)
 
     def __init__(self, functions, maxParallelRequests, s3Bucket, stats):
         self.__functions = functions
@@ -50,6 +49,7 @@ class ShortLivedLambdaProxy(AbstractRequestProxy):
             self.__s3DeletePool = ThreadPoolExecutor(1)
 
     def __get_lambda_client(self, function):
+        """Get a lambda client from the right region"""
         client = self.__functionToClient.get(function)
         if client is not None:
             return client
@@ -76,6 +76,16 @@ class ShortLivedLambdaProxy(AbstractRequestProxy):
         self.__s3Stats.record_get(len(ret))
         return ret
 
+    def __put_object_into_s3(self, data):
+        md5 = hashlib.md5()
+        md5.update(data)
+        key = md5.hexdigest()
+        s3Bucket = boto3.resource('s3').Bucket(self.__s3Bucket)
+        s3Bucket.put_object(Key=key, Body=data,
+                            StorageClass='REDUCED_REDUNDANCY')
+        self.__s3Stats.record_get(len(data))
+        return key
+
     def request(self, method, url, headers, body):
         logger.debug('Proxying %s %s with Lamdba', method, url)
         args = {
@@ -83,22 +93,33 @@ class ShortLivedLambdaProxy(AbstractRequestProxy):
             'url': url,
             'headers': headers,
         }
-        if body is not None:
-            args['body64'] = b64encode(body)
-        if self.__s3Bucket is not None:
-            args['s3Bucket'] = self.__s3Bucket
-
-        function = _secureRandom.choice(self.__functions)
-        lambdaClient = self.__get_lambda_client(function)
-
-        self.__lambdaRateSemaphore.acquire()
+        requestS3Key = None
         try:
-            with self.__lambdaStats.record():
-                response = lambdaClient.invoke(
-                    FunctionName=function,
-                    Payload=json.dumps(args))
+            if body is not None:
+                encodedBody = b64encode(body)
+                if len(encodedBody) <= ShortLivedLambdaProxy.MAX_BODY_LEN:
+                    args['body64'] = encodedBody
+                elif self.__s3Bucket is not None:
+                    requestS3Key = self.__put_object_into_s3(encodedBody)
+                    args['s3Key'] = requestS3Key
+            if self.__s3Bucket is not None:
+                args['s3Bucket'] = self.__s3Bucket
+
+            function = _secureRandom.choice(self.__functions)
+            lambdaClient = self.__get_lambda_client(function)
+
+            self.__lambdaRateSemaphore.acquire()
+            try:
+                with self.__lambdaStats.record():
+                    response = lambdaClient.invoke(
+                        FunctionName=function,
+                        Payload=json.dumps(args))
+            finally:
+                self.__lambdaRateSemaphore.release()
         finally:
-            self.__lambdaRateSemaphore.release()
+            if requestS3Key is not None:
+                self.__s3DeletePool.submit(self.__delete_object_from_s3,
+                                           requestS3Key)
 
         if response['StatusCode'] != 200:
             logger.error('%s: status=%d', response['FunctionError'],
@@ -119,8 +140,7 @@ class ShortLivedLambdaProxy(AbstractRequestProxy):
             content = self.__load_object_from_s3(payload['s3Key'])
         else:
             content = b''
-        return ProxyResponse(statusCode=statusCode,
-                             headers=headers,
+        return ProxyResponse(statusCode=statusCode, headers=headers,
                              content=content)
 
 

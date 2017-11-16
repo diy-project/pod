@@ -37,6 +37,13 @@ def short_lived_handler(event, context):
 
     if 'body64' in event:
         requestBody = b64decode(event['body64'])
+    elif 's3Key' in event:
+        if s3BucketName is not None:
+            s3 = boto3.resource('s3')
+            s3Object = s3.Object(Bucket=s3BucketName, Key=event['s3Key'])
+            requestBody = s3Object.get()['Body'].read()
+        else:
+            return {'statusCode': 500, 'headers': {}}
     else:
         requestBody = None
 

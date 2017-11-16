@@ -210,17 +210,20 @@ def build_handler(proxy, stats, verbose):
             # Approximate the response length
             approxResponseLen = 20
 
-            self.send_response(response.statusCode)
-            for header, value in response.headers.iteritems():
-                if header in FILTERED_RESPONSE_HEADERS:
-                    continue
-                approxResponseLen = len(header) + len(str(value)) + 4
-                self.send_header(header, value)
-            self.send_header('Proxy-Connection', 'close')
-            self.end_headers()
-            self.wfile.write(response.content)
-            approxResponseLen += len(response.content)
-            proxyStats.record_bytes_down(approxResponseLen)
+            try:
+                self.send_response(response.statusCode)
+                for header, value in response.headers.iteritems():
+                    if header in FILTERED_RESPONSE_HEADERS:
+                        continue
+                    approxResponseLen = len(header) + len(str(value)) + 4
+                    self.send_header(header, value)
+                self.send_header('Proxy-Connection', 'close')
+                self.end_headers()
+                self.wfile.write(response.content)
+                approxResponseLen += len(response.content)
+                proxyStats.record_bytes_down(approxResponseLen)
+            except Exception, e:
+                logger.exception(e)
             return
 
         @log_request_delay
@@ -244,7 +247,6 @@ def build_handler(proxy, stats, verbose):
                 proxy.stream(self.connection, sock)
             except Exception, e:
                 logger.exception(e)
-                raise
             finally:
                 sock.close()
             return
