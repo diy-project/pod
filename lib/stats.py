@@ -1,5 +1,6 @@
 import os
 import time
+import json
 
 from abc import abstractproperty
 from collections import OrderedDict
@@ -87,14 +88,13 @@ class Stats(object):
         color = DEFAULT_COLORS[(i + 1) % numColors]
         print colored('[%#8s]' % name, color), 'cost: $%#1.05f' % totalCost
 
-
     def start_live_summary(self, frequency=5):
         # Only require threading if using this
         this = self
         def live_summary():
             while True:
-                this._dump_live_summary()
                 time.sleep(frequency)
+                this._dump_live_summary()
         t = Thread(target=live_summary)
         t.daemon = True
         t.start()
@@ -147,7 +147,8 @@ class SqsStatsModel(_AbstractCostModel, _AbstractDataModel):
 
     class Constants:
         PER_REQUEST_COST = 0.4 / (10 ** 6)
-        MAX_REQUEST_SIZE = 64 * 1024
+        MAX_REQUEST_SIZE = 256 * 1024
+        BILLING_UNIT_SIZE = 64 * 1024
 
     def __init__(self):
         self.__totalMessagesReceived = 0
@@ -173,6 +174,20 @@ class SqsStatsModel(_AbstractCostModel, _AbstractDataModel):
     def bytesDown(self):
         return self.__totalBytesDown
 
+    @staticmethod
+    def estimate_message_size(message=None, messageAttributes=None,
+                              messageBody=None):
+        size = 0
+        if message is not None:
+            if message.message_attributes is not None:
+                size += len(json.dumps(message.message_attributes))
+            size += len(message.body)
+        else:
+            if messageAttributes is not None:
+                size += len(json.dumps(messageAttributes))
+            size += len(messageBody)
+        return size
+
     def record_poll(self):
         self.__totalPolls += 1
         self.__totalRequests += 1
@@ -180,8 +195,8 @@ class SqsStatsModel(_AbstractCostModel, _AbstractDataModel):
     def record_send(self, size=Constants.MAX_REQUEST_SIZE):
         self.__totalMessagesSent += 1
         self.__totalBytesUp += size
-        requests = size / SqsStatsModel.Constants.MAX_REQUEST_SIZE
-        if size % SqsStatsModel.Constants.MAX_REQUEST_SIZE != 0:
+        requests = size / SqsStatsModel.Constants.BILLING_UNIT_SIZE
+        if size % SqsStatsModel.Constants.BILLING_UNIT_SIZE != 0:
             requests += 1
         # Assume someone on the other side is receiving the request
         # by polling and deleting it when done
@@ -189,9 +204,9 @@ class SqsStatsModel(_AbstractCostModel, _AbstractDataModel):
 
     def record_receive(self, size=Constants.MAX_REQUEST_SIZE):
         self.__totalMessagesReceived += 1
-        self.__totalBytesDown += 1
-        requests = size / SqsStatsModel.Constants.MAX_REQUEST_SIZE
-        if size % SqsStatsModel.Constants.MAX_REQUEST_SIZE != 0:
+        self.__totalBytesDown += size
+        requests = size / SqsStatsModel.Constants.BILLING_UNIT_SIZE
+        if size % SqsStatsModel.Constants.BILLING_UNIT_SIZE != 0:
             requests += 1
 
         # Assume someone on the other side sent the request and

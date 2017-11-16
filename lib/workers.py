@@ -175,9 +175,6 @@ class WorkerManager(object):
         messageStatus = self.__taskQueue.send_message(
             MessageBody=task.body, **kwargs)
 
-        # TODO: Fix me. Assume maximally sized messages
-        self.__sqsStats.record_send()
-
         # Use the MessageId as taskId
         taskId = messageStatus['MessageId']
 
@@ -186,6 +183,12 @@ class WorkerManager(object):
             self.__tasksInProgress[taskId] = taskFuture
             self.__numTasksInProgress = len(self.__tasksInProgress)
             self.__tasksInProgressCondition.notify()
+
+        # Do this before sleeping
+        self.__sqsStats.record_send(
+            SqsStatsModel.estimate_message_size(
+                messageAttributes=task.messageAttributes,
+                messageBody=task.body))
 
         result = taskFuture.get(timeout=timeout)
 
@@ -246,7 +249,6 @@ class WorkerManager(object):
 
     def __handle_single_result_message(self, message):
         # TODO: Fix me. Assume maximally sized messages for now
-        self.__sqsStats.record_receive()
         try:
             result = LambdaSqsResult.from_message(message)
             taskId = result.taskId
@@ -272,6 +274,9 @@ class WorkerManager(object):
         except Exception, e:
             logger.error('Failed to parse message: %s', message)
             logger.exception(e)
+        finally:
+            self.__sqsStats.record_receive(
+                SqsStatsModel.estimate_message_size(message=message))
 
     def __result_daemon(self):
         """Poll SQS result queue and set futures"""
