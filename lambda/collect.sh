@@ -17,5 +17,3 @@ zip proxy.zip -x '*.pyc' -r \
     shared \
     *-info \
     proxy.py
-
-
