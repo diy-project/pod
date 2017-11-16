@@ -50,7 +50,7 @@ def get_args():
 
     parser.add_argument('--lambda-type', '-t', dest='lambdaType',
                         choices=['short', 'long', 'hybrid'],
-                        default='hybrid', type=str,
+                        default='short', type=str,
                         help='Type of lambda workers to use')
 
     parser.add_argument('--large-transport', '-xl', dest='largeTransport',
@@ -228,6 +228,7 @@ def build_handler(proxy, stats, verbose):
             proxyStats.record_bytes_down(approxResponseLen)
             return
 
+        @log_request_delay
         def _connect_request(self):
             if verbose: self._print_request()
 
@@ -288,4 +289,7 @@ def main(host, port, args=None):
 
 if __name__ == '__main__':
     args = get_args()
-    main(args.host, args.port, args)
+    try:
+        main(args.host, args.port, args)
+    except KeyboardInterrupt:
+        print 'exiting'

@@ -231,7 +231,7 @@ class WorkerManager(object):
                 response = self.__lambda.invoke(
                     FunctionName=functionName,
                     Payload=json.dumps(workerArgs))
-            if response['StatusCode'] != 200:
+            if response['StatusCode'] != 200 or 'FunctionError' in response:
                 logger.error('Worker %d exited unexpectedly: %s: status=%d',
                              workerId,
                              response['FunctionError'],

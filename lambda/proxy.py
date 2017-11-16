@@ -23,7 +23,7 @@ def log_request(method, url, headers):
 
 
 # The body can be up to 6MB, this leaves a bit of lee-way
-MAX_LAMBDA_BODY_PAYLOAD_SIZE = 5 * 1024 * 1024
+MAX_LAMBDA_BODY_PAYLOAD_SIZE = int(5.8 * 1024 * 1024)
 
 
 def short_lived_handler(event, context):

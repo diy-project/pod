@@ -67,26 +67,26 @@ class Stats(object):
             color = colors[i % numColors]
             values = []
             if isinstance(model, ProxyStatsModel):
-                values.append(('count', '%#7d' % model.totalRequests))
-                values.append(('delay', '%#5dms' % int(model.meanDelay)))
+                values.append('count: {:8d}'.format(model.totalRequests))
+                values.append('delay: {:6d}ms'.format(int(model.meanDelay)))
             if isinstance(model, _AbstractCostModel):
                 modelCost = model.cost
                 totalCost += modelCost
-                values.append(('cost', '$%#1.05f' % modelCost))
+                values.append('cost: ${:8f}'.format(modelCost))
             if isinstance(model, _AbstractTimeModel):
-                values.append(('time', '%#7ds' % (model.time / 1000)))
+                values.append('time: {:8d}s'.format(int(model.time) / 1000))
             if isinstance(model, _AbstractDataModel):
                 MBDown = float(model.bytesDown) / MEGABYTE
                 MBUp = float(model.bytesUp) / MEGABYTE
-                values.append(('up', '%#5.06fMB' % MBUp))
-                values.append(('down', '%#5.04fMB' % MBDown))
+                values.append('up: {:9.3f}MB'.format(MBUp))
+                values.append('down: {:7.3f}MB'.format(MBDown))
 
             print colored('[%#8s]' % name, color),\
-                '  '.join(['%s: %s' % x for x in values])
+                '  '.join(values)
 
         name = 'total'
         color = DEFAULT_COLORS[(i + 1) % numColors]
-        print colored('[%#8s]' % name, color), 'cost: $%#1.05f' % totalCost
+        print colored('[%#8s]' % name, color), 'cost: ${:8f}'.format(totalCost)
 
     def start_live_summary(self, frequency=5):
         # Only require threading if using this
@@ -117,7 +117,7 @@ class LambdaStatsModel(_AbstractCostModel, _AbstractTimeModel):
     @property
     def cost(self):
         return (LambdaStatsModel.Constants.PER_REQUEST_COST * self._totalRequests
-                + self._totalMillis * LambdaStatsModel.Constants.PER_100MS_COST)
+                + self._totalMillis / 100 * LambdaStatsModel.Constants.PER_100MS_COST)
 
     @property
     def time(self):
@@ -132,9 +132,9 @@ class LambdaStatsModel(_AbstractCostModel, _AbstractTimeModel):
             self.__startTime = time.time()
 
         def __exit__(self, exc_type, exc_val, exc_tb):
-            runTime = int(time.time() - self.__startTime)
+            runTime = time.time() - self.__startTime
             self.__model._totalRequests += 1
-            estMillisBilled = runTime * 1000
+            estMillisBilled = int(runTime * 1000)
             if estMillisBilled % 100 != 0:
                 estMillisBilled += (100 - estMillisBilled % 100)
             self.__model._totalMillis += estMillisBilled
@@ -220,8 +220,9 @@ class S3StatsModel(_AbstractCostModel, _AbstractDataModel):
         PER_PUT_COST = 0.0055 / 1000
         PER_GET_COST = 0.0044 / 10000
 
-        DATA_STORAGE_COST = 0.0264 / (2 ** 30)
-        DATA_RETRIEVAL_COST = 0.01 / (2 ** 30)
+        # DATA_STORAGE_COST = 0.0264 / (2 ** 30)
+        DATA_STORAGE_COST = 0.0
+        DATA_RETRIEVAL_COST = 0.09 / (2 ** 30)
 
     def __init__(self, bothSides=True):
         self.__bothSides = bothSides
