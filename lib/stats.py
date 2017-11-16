@@ -1,12 +1,19 @@
-import os
-import time
 import json
+import logging
+import os
+import re
+import time
 
 from abc import abstractproperty
+from base64 import b64decode
 from collections import OrderedDict
 from datetime import datetime
+from StringIO import StringIO
 from termcolor import colored
 from threading import Thread
+
+
+logger = logging.getLogger(__name__)
 
 
 class _AbstractModel(object):
@@ -56,48 +63,62 @@ class Stats(object):
     def get_model(self, name):
         return self.__models[name]
 
-    def _dump_live_summary(self, colors=DEFAULT_COLORS):
-        _cls()
+    def _get_live_summary(self, minRefreshRate, colors=DEFAULT_COLORS):
+        sio = StringIO()
         td = datetime.now() - self.__startDate
-        print colored('Displaying stats for %dd %dh %dm %ds' %
-                      (td.days, td.seconds / 3600, (td.seconds % 3600) / 60,
-                       td.seconds % 60),
-                      'white', 'on_green')
-        numColors = len(colors)
-        totalCost = 0.0
-        for i, name in enumerate(self.__models):
-            model = self.__models[name]
-            color = colors[i % numColors]
-            values = []
-            if isinstance(model, ProxyStatsModel):
-                values.append('count: {:8d}'.format(model.totalRequests))
-                values.append('delay: {:6d}ms'.format(int(model.meanDelay)))
-            if isinstance(model, _AbstractCostModel):
-                modelCost = model.cost
-                totalCost += modelCost
-                values.append('cost: ${:8f}'.format(modelCost))
-            if isinstance(model, _AbstractTimeModel):
-                values.append('time: {:8d}s'.format(int(model.time) / 1000))
-            if isinstance(model, _AbstractDataModel):
-                MBDown = float(model.bytesDown) / MEGABYTE
-                MBUp = float(model.bytesUp) / MEGABYTE
-                values.append('up: {:9.3f}MB'.format(MBUp))
-                values.append('down: {:7.3f}MB'.format(MBDown))
+        try:
+            print >> sio, colored('Displaying stats for %dd %dh %dm %ds (%ds refresh)' %
+                                  (td.days, td.seconds / 3600,
+                                  (td.seconds % 3600) / 60,
+                                   ((td.seconds % 60) / minRefreshRate) * minRefreshRate,
+                                   minRefreshRate),
+                                  'white', 'on_green')
+            numColors = len(colors)
+            totalCost = 0.0
+            for i, name in enumerate(self.__models):
+                model = self.__models[name]
+                color = colors[i % numColors]
+                values = []
+                if isinstance(model, ProxyStatsModel):
+                    values.append('count: {:8d}'.format(model.totalRequests))
+                    values.append('delay: {:6d}ms'.format(int(model.meanDelay)))
+                if isinstance(model, _AbstractCostModel):
+                    modelCost = model.cost
+                    totalCost += modelCost
+                    values.append('cost: ${:8f}'.format(modelCost))
+                if isinstance(model, _AbstractTimeModel):
+                    values.append('time: {:8d}s'.format(int(model.time) / 1000))
+                if isinstance(model, _AbstractDataModel):
+                    MBDown = float(model.bytesDown) / MEGABYTE
+                    MBUp = float(model.bytesUp) / MEGABYTE
+                    values.append('up: {:9.3f}MB'.format(MBUp))
+                    values.append('down: {:7.3f}MB'.format(MBDown))
 
-            print colored('[%#8s]' % name, color),\
-                '  '.join(values)
+                print >> sio, colored('[%#8s]' % name, color), '  '.join(values)
 
-        name = 'total'
-        color = DEFAULT_COLORS[(i + 1) % numColors]
-        print colored('[%#8s]' % name, color), 'cost: ${:8f}'.format(totalCost)
+            name = 'total'
+            color = DEFAULT_COLORS[len(self.__models) % numColors]
+            print >> sio, colored('[%#8s]' % name, color), \
+                'cost: ${:8f}'.format(totalCost)
+            return sio.getvalue()
+        finally:
+            sio.close()
 
-    def start_live_summary(self, frequency=5):
-        # Only require threading if using this
+    def start_live_summary(self, refreshRate=1, minRefreshRate=15):
         this = self
         def live_summary():
+            lastRefresh = None
+            prevSummary = None
             while True:
-                time.sleep(frequency)
-                this._dump_live_summary()
+                time.sleep(refreshRate)
+                summary = this._get_live_summary(minRefreshRate)
+                if summary != prevSummary or lastRefresh >= minRefreshRate:
+                    _cls()
+                    print summary,
+                    lastRefresh = 0
+                else:
+                    lastRefresh += 1
+                prevSummary = summary
         t = Thread(target=live_summary)
         t.daemon = True
         t.start()
@@ -112,6 +133,10 @@ class LambdaStatsModel(_AbstractCostModel, _AbstractTimeModel):
     class Constants:
         PER_REQUEST_COST = 0.2 / (10 ** 6)
         PER_100MS_COST = 0.000000208
+
+        MAX_MILLIS_PER_RUN = 5 * 60 * 1000
+
+    BILLING_RE = re.compile('Billed Duration: (\d+) ms')
 
     def __init__(self):
         self._totalMillis = 0
@@ -130,17 +155,38 @@ class LambdaStatsModel(_AbstractCostModel, _AbstractTimeModel):
 
         def __init__(self, model):
             self.__model = model
+            self.__billedMillis = None
 
         def __enter__(self):
             self.__startTime = time.time()
+            return self
 
         def __exit__(self, exc_type, exc_val, exc_tb):
-            runTime = time.time() - self.__startTime
             self.__model._totalRequests += 1
-            estMillisBilled = int(runTime * 1000)
-            if estMillisBilled % 100 != 0:
-                estMillisBilled += (100 - estMillisBilled % 100)
-            self.__model._totalMillis += estMillisBilled
+            if self.__billedMillis is None:
+                logging.warn('No billing info found. Using estimate instead')
+                runTime = time.time() - self.__startTime
+                estMillisBilled = min(
+                    LambdaStatsModel.Constants.MAX_MILLIS_PER_RUN,
+                    int(runTime * 1000))
+                if estMillisBilled % 100 != 0:
+                    estMillisBilled += (100 - estMillisBilled % 100)
+                self.__model._totalMillis += estMillisBilled
+            else:
+                self.__model._totalMillis += self.__billedMillis
+
+        def parse_log(self, log64):
+            try:
+                log = b64decode(log64)
+                match = LambdaStatsModel.BILLING_RE.search(log)
+                if match is not None:
+                    billedMillis = int(match.group(1))
+                    self.__billedMillis = billedMillis
+                    logging.info('Lambda billed for %dms', billedMillis)
+                else:
+                    logging.error('Failed to find billing duration in log')
+            except Exception, e:
+                logger.exception(e)
 
     def record(self):
         return LambdaStatsModel.Request(self)

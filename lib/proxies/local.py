@@ -3,7 +3,6 @@ import select
 import socket
 
 from lib.proxy import AbstractRequestProxy, AbstractStreamProxy, proxy_single_request
-from lib.stats import ProxyStatsModel
 
 
 class LocalProxy(AbstractRequestProxy, AbstractStreamProxy):

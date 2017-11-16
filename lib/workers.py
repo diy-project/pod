@@ -227,10 +227,12 @@ class WorkerManager(object):
     def __wait_for_worker(self, functionName, workerId, workerArgs):
         """Wait for the worker to exit and the lambda to return"""
         try:
-            with self.__lambdaStats.record():
+            with self.__lambdaStats.record() as billingObject:
                 response = self.__lambda.invoke(
                     FunctionName=functionName,
-                    Payload=json.dumps(workerArgs))
+                    Payload=json.dumps(workerArgs),
+                    LogType='Tail')
+                billingObject.parse_log(response['LogResult'])
             if response['StatusCode'] != 200 or 'FunctionError' in response:
                 logger.error('Worker %d exited unexpectedly: %s: status=%d',
                              workerId,

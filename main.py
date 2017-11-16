@@ -3,7 +3,6 @@
 import argparse
 import logging
 import sys
-import time
 
 from BaseHTTPServer import HTTPServer, BaseHTTPRequestHandler
 from fake_useragent import UserAgent
@@ -280,7 +279,7 @@ def main(host, port, args=None):
     handler = build_handler(proxy, stats, verbose=args.verbose)
     server = ThreadedHTTPServer((host, port), handler)
     print 'Starting proxy, use <Ctrl-C> to stop'
-    stats.start_live_summary()
+    stats.start_live_summary(1)
     server.serve_forever()
 
 

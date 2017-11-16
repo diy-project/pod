@@ -14,7 +14,6 @@ from threading import Lock
 
 from lib.headers import FILTERED_REQUEST_HEADERS, FILTERED_RESPONSE_HEADERS, \
     DEFAULT_USER_AGENT
-from lib.stats import ProxyStatsModel
 from lib.proxy import AbstractRequestProxy, AbstractStreamProxy
 
 logger = logging.getLogger(__name__)

@@ -110,10 +110,12 @@ class ShortLivedLambdaProxy(AbstractRequestProxy):
 
             self.__lambdaRateSemaphore.acquire()
             try:
-                with self.__lambdaStats.record():
+                with self.__lambdaStats.record() as billingObject:
                     response = lambdaClient.invoke(
                         FunctionName=function,
-                        Payload=json.dumps(args))
+                        Payload=json.dumps(args),
+                        LogType='Tail')
+                    billingObject.parse_log(response['LogResult'])
             finally:
                 self.__lambdaRateSemaphore.release()
         finally:

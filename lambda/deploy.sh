@@ -7,7 +7,7 @@ fi
 
 read -e -p "Enter the name of the function: " -i 'proxy' FUNCTION_NAME
 
-read -e -p  "Enter the name of the region to deploy to: " -i 'us-west-1' REGION_NAME
+read -e -p "Enter the name of the region to deploy to: " -i 'us-west-1' REGION_NAME
 
 read -p "Update existing function? (y/N): " -n 1 -r
 echo
