@@ -1,9 +1,11 @@
 import boto3
 import json
 import logging
+import sys
 import time
 
 from base64 import b64encode, b64decode
+from collections import namedtuple
 from concurrent.futures import ThreadPoolExecutor
 from random import SystemRandom
 from threading import Semaphore
@@ -19,6 +21,11 @@ logger = logging.getLogger(__name__)
 _secureRandom = SystemRandom()
 
 
+def _get_region_from_arn(arn):
+    elements = arn.split(':')
+    return elements[3]
+
+
 class ShortLivedLambdaProxy(AbstractRequestProxy):
     """Invoke a lambda for each request"""
 
@@ -26,6 +33,8 @@ class ShortLivedLambdaProxy(AbstractRequestProxy):
 
     def __init__(self, functions, maxParallelRequests, s3Bucket, stats):
         self.__functions = functions
+        self.__functionToClient = {}
+        self.__regionToClient = {}
         self.__lambdaRateSemaphore = Semaphore(maxParallelRequests)
         self.__s3Bucket = s3Bucket
 
@@ -39,6 +48,23 @@ class ShortLivedLambdaProxy(AbstractRequestProxy):
             self.__s3Stats = stats.get_model('s3')
             self.__s3 = boto3.client('s3')
             self.__s3DeletePool = ThreadPoolExecutor(1)
+
+    def __get_lambda_client(self, function):
+        client = self.__functionToClient.get(function)
+        if client is not None:
+            return client
+        if 'arn:' not in function:
+            # using function name in the default region
+            client = self.__lambda
+            self.__functionToClient[function] = client
+        else:
+            region = _get_region_from_arn(function)
+            client = self.__regionToClient.get(region)
+            if client is None:
+                client = boto3.client('lambda', region_name=region)
+                self.__regionToClient[region] = client
+            self.__functionToClient[function] = client
+        return client
 
     def __delete_object_from_s3(self, key):
         self.__s3.delete_object(Bucket=self.__s3Bucket, Key=key)
@@ -62,11 +88,14 @@ class ShortLivedLambdaProxy(AbstractRequestProxy):
         if self.__s3Bucket is not None:
             args['s3Bucket'] = self.__s3Bucket
 
+        function = _secureRandom.choice(self.__functions)
+        lambdaClient = self.__get_lambda_client(function)
+
         self.__lambdaRateSemaphore.acquire()
         try:
             with self.__lambdaStats.record():
-                response = self.__lambda.invoke(
-                    FunctionName=_secureRandom.choice(self.__functions),
+                response = lambdaClient.invoke(
+                    FunctionName=function,
                     Payload=json.dumps(args))
         finally:
             self.__lambdaRateSemaphore.release()
@@ -99,6 +128,14 @@ class LongLivedLambdaProxy(AbstractRequestProxy):
     """Return a function that queues requests in SQS"""
 
     def __init__(self, functions, maxLambdas, s3Bucket, stats, verbose):
+
+        # Supporting this across regions is not a priority since that would
+        # incur costs for SQS and S3, and be error prone.
+        if len(functions) > 1 and 'arn:' in functions[0]:
+            raise NotImplementedError(
+                'Only a single function may be specified by name for a '
+                'long lived proxy')
+
         self.__verbose = verbose
         self.__s3Bucket = s3Bucket
 

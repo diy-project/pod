@@ -44,9 +44,8 @@ def get_args():
     parser.add_argument('--local', '-l', action='store_true',
                         dest='runLocal',
                         help='Run the proxy locally')
-    parser.add_argument('--function', '-f', dest='functions',
-                        action='append', default=['simple-http-proxy'],
-                        help='Lambda functions by name or ARN')
+    parser.add_argument('--function', '-f', dest='functions', action='append',
+                        help='Lambda functions by name (default-region) or ARN')
 
     parser.add_argument('--lambda-type', '-t', dest='lambdaType',
                         choices=['short', 'long', 'hybrid'],
