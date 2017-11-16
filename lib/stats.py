@@ -285,9 +285,10 @@ class ProxyStatsModel(_AbstractDataModel):
             self.__startTime = time.time()
 
         def __exit__(self, exc_type, exc_val, exc_tb):
-            delay = time.time() - self.__startTime
-            self.__model._totalRequestDelays += delay * 1000
-            self.__model._totalRequestsProxied += 1
+            if exc_type is None:
+                delay = time.time() - self.__startTime
+                self.__model._totalRequestDelays += delay * 1000
+                self.__model._totalRequestsProxied += 1
 
     @property
     def totalRequests(self):

@@ -26,7 +26,7 @@ logging.getLogger(
 ).setLevel(logging.ERROR)
 
 DEFAULT_PORT = 1080
-DEFAULT_MAX_LAMBDAS = 10
+DEFAULT_MAX_LAMBDAS = 100
 
 MITM_CERT_PATH = 'mitm.ca.pem'
 MITM_KEY_PATH = 'mitm.key.pem'
