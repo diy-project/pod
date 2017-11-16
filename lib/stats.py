@@ -4,6 +4,7 @@ import json
 
 from abc import abstractproperty
 from collections import OrderedDict
+from datetime import datetime
 from termcolor import colored
 from threading import Thread
 
@@ -46,7 +47,7 @@ class Stats(object):
 
     def __init__(self):
         self.__models = OrderedDict()
-        self.__startTime = time.time()
+        self.__startDate = datetime.now()
 
     def register_model(self, name, model):
         assert isinstance(model, _AbstractModel)
@@ -57,8 +58,10 @@ class Stats(object):
 
     def _dump_live_summary(self, colors=DEFAULT_COLORS):
         _cls()
-        print colored('Displaying stats for %d seconds' %
-                      int(time.time() - self.__startTime),
+        td = datetime.now() - self.__startDate
+        print colored('Displaying stats for %dd %dh %dm %ds' %
+                      (td.days, td.seconds / 3600, (td.seconds % 3600) / 60,
+                       td.seconds % 60),
                       'white', 'on_green')
         numColors = len(colors)
         totalCost = 0.0
