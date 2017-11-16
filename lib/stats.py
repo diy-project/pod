@@ -140,20 +140,24 @@ class LambdaStatsModel(_AbstractCostModel, _AbstractTimeModel):
 
     class Constants:
         PER_REQUEST_COST = 0.2 / (10 ** 6)
+
+        # Assume cost scales linearly
         PER_100MS_COST = 0.000000208
+        PER_100MS_RAM = 128
 
         MAX_MILLIS_PER_RUN = 5 * 60 * 1000
 
-    BILLING_RE = re.compile('Billed Duration: (\d+) ms')
+    BILLING_RE = re.compile('Billed Duration: (\d+) ms\s+Memory Size: (\d+) MB')
 
     def __init__(self):
         self._totalMillis = 0
         self._totalRequests = 0
+        self._timeBilledCost = 0.0
 
     @property
     def cost(self):
         return (LambdaStatsModel.Constants.PER_REQUEST_COST * self._totalRequests
-                + self._totalMillis / 100 * LambdaStatsModel.Constants.PER_100MS_COST)
+                + self._timeBilledCost)
 
     @property
     def time(self):
@@ -169,6 +173,7 @@ class LambdaStatsModel(_AbstractCostModel, _AbstractTimeModel):
         def __init__(self, model):
             self.__model = model
             self.__billedMillis = None
+            self.__billedMemory = LambdaStatsModel.Constants.PER_100MS_RAM
 
         def __enter__(self):
             self.__startTime = time.time()
@@ -176,6 +181,8 @@ class LambdaStatsModel(_AbstractCostModel, _AbstractTimeModel):
 
         def __exit__(self, exc_type, exc_val, exc_tb):
             self.__model._totalRequests += 1
+            billingScale = float(self.__billedMemory) / \
+                           LambdaStatsModel.Constants.PER_100MS_RAM
             if self.__billedMillis is None:
                 logging.warn('No billing info found. Using estimate instead')
                 runTime = time.time() - self.__startTime
@@ -185,8 +192,14 @@ class LambdaStatsModel(_AbstractCostModel, _AbstractTimeModel):
                 if estMillisBilled % 100 != 0:
                     estMillisBilled += (100 - estMillisBilled % 100)
                 self.__model._totalMillis += estMillisBilled
+                self.__model._timeBilledCost = (
+                    LambdaStatsModel.Constants.PER_100MS_COST * billingScale
+                    * (estMillisBilled / 100))
             else:
                 self.__model._totalMillis += self.__billedMillis
+                self.__model._timeBilledCost = (
+                    LambdaStatsModel.Constants.PER_100MS_COST * billingScale
+                    * (self.__billedMillis / 100))
 
         def parse_log(self, log64):
             try:
@@ -194,8 +207,11 @@ class LambdaStatsModel(_AbstractCostModel, _AbstractTimeModel):
                 match = LambdaStatsModel.BILLING_RE.search(log)
                 if match is not None:
                     billedMillis = int(match.group(1))
+                    billedMemory = int(match.group(2))
                     self.__billedMillis = billedMillis
-                    logging.info('Lambda billed for %dms', billedMillis)
+                    self.__billedMemory = billedMemory
+                    logging.info('Lambda %dMB billed for %dms', billedMemory,
+                                 billedMillis)
                 else:
                     logging.error('Failed to find billing duration in log')
             except Exception, e:
