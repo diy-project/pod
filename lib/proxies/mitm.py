@@ -14,11 +14,10 @@ from threading import Lock
 
 from lib.headers import FILTERED_REQUEST_HEADERS, FILTERED_RESPONSE_HEADERS, \
     DEFAULT_USER_AGENT
+from lib.stats import ProxyStatsModel
 from lib.proxy import AbstractRequestProxy, AbstractStreamProxy
 
-
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__file__)
+logger = logging.getLogger(__name__)
 
 
 def _print_mitm_request(method, url, headers):
@@ -52,9 +51,13 @@ class MitmHttpsProxy(AbstractStreamProxy):
 
     __secureRandom = SystemRandom()
 
-    def __init__(self, requestProxy, certfile, keyfile,
+    def __init__(self, requestProxy, certfile, keyfile, stats,
                  overrideUserAgent=False, verbose=False):
         assert isinstance(requestProxy, AbstractRequestProxy)
+
+        if 'proxy' not in stats.models:
+            stats.register_model('proxy', ProxyStatsModel())
+        self.__proxyModel = stats.get_model('proxy')
 
         self.__certCache = {}
         self.__certCacheLock = Lock()
@@ -133,12 +136,14 @@ class MitmHttpsProxy(AbstractStreamProxy):
 
     def __stream_one_request(self, cliSslSock, servSock):
         # Read until the end of the headers
+        totalRequestLen = 0
         data = b''
         while True:
             chunk = cliSslSock.recv(8192)
             if chunk == '':
                 raise IOError('Unable to parse request: %s' % servSock)
             data += chunk
+            totalRequestLen += len(chunk)
             if '\r\n\r\n' in data:
                 splitIdx = data.index('\r\n\r\n')
                 request = data[:splitIdx]
@@ -169,8 +174,11 @@ class MitmHttpsProxy(AbstractStreamProxy):
                 if chunk == '':
                     raise IOError('Failed to read all data: %s' % servSock)
                 data += chunk
+                totalRequestLen += len(chunk)
         else:
             data = None
+
+        self.__proxyModel.record_bytes_up(totalRequestLen)
 
         if self.__verbose:
             _print_mitm_request(method, url, headers)
@@ -189,9 +197,13 @@ class MitmHttpsProxy(AbstractStreamProxy):
         responseLines.append('Connection: close')
         responseLines.append('')
         responseLines.append('')
+
         try:
-            cliSslSock.sendall('\r\n'.join(responseLines))
+            responseHeaders = '\r\n'.join(responseLines)
+            cliSslSock.sendall(responseHeaders)
+            self.__proxyModel.record_bytes_down(len(responseHeaders))
             if response.content:
                 cliSslSock.sendall(response.content)
+                self.__proxyModel.record_bytes_down(len(response.content))
         except socket.error, e:
             logger.warn('Error sending response: %s', e)

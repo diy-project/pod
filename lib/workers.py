@@ -9,15 +9,14 @@ from abc import abstractproperty
 from concurrent.futures import ThreadPoolExecutor
 from threading import Condition, Event, Lock, Thread
 
+from lib.stats import Stats, LambdaStatsModel, SqsStatsModel
 from shared.workers import LambdaSqsResult, LambdaSqsTask
 
 # Re-expose these classes
 LambdaSqsResult = LambdaSqsResult
 LambdaSqsTask = LambdaSqsTask
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__file__)
-
+logger = logging.getLogger(__name__)
 
 MAX_SQS_REQUEST_MESSAGES = 10
 
@@ -97,8 +96,19 @@ class LambdaSqsTaskConfig(object):
 
 class WorkerManager(object):
 
-    def __init__(self, taskConfig):
+    def __init__(self, taskConfig, stats=None):
         self.__config = taskConfig
+        if stats is None:
+            stats = Stats()
+        self.__stats = stats
+
+        if 'lambda' not in stats.models:
+            stats.register_model('lambda', LambdaStatsModel())
+        self.__lambdaStats = stats.get_model('lambda')
+
+        if 'sqs' not in stats.models:
+            stats.register_model('sqs', SqsStatsModel())
+        self.__sqsStats = stats.get_model('sqs')
 
         self.__lambda = boto3.client('lambda')
 
@@ -165,6 +175,9 @@ class WorkerManager(object):
         messageStatus = self.__taskQueue.send_message(
             MessageBody=task.body, **kwargs)
 
+        # TODO: Fix me. Assume maximally sized messages
+        self.__sqsStats.record_send()
+
         # Use the MessageId as taskId
         taskId = messageStatus['MessageId']
 
@@ -192,7 +205,7 @@ class WorkerManager(object):
 
     def __spawn_new_worker(self):
         workerId = random.getrandbits(32)
-        logger.debug('Starting new worker: %d', workerId)
+        logger.info('Starting new worker: %d', workerId)
         workerArgs = {
             'workerId': workerId,
             'taskQueue': self.__taskQueueName,
@@ -211,9 +224,10 @@ class WorkerManager(object):
     def __wait_for_worker(self, functionName, workerId, workerArgs):
         """Wait for the worker to exit and the lambda to return"""
         try:
-            response = self.__lambda.invoke(
-                FunctionName=functionName,
-                Payload=json.dumps(workerArgs))
+            with self.__lambdaStats.record():
+                response = self.__lambda.invoke(
+                    FunctionName=functionName,
+                    Payload=json.dumps(workerArgs))
             if response['StatusCode'] != 200:
                 logger.error('Worker %d exited unexpectedly: %s: status=%d',
                              workerId,
@@ -231,6 +245,8 @@ class WorkerManager(object):
                 assert self.__numWorkers >= 0, 'Workers cannot be negative'
 
     def __handle_single_result_message(self, message):
+        # TODO: Fix me. Assume maximally sized messages for now
+        self.__sqsStats.record_receive()
         try:
             result = LambdaSqsResult.from_message(message)
             taskId = result.taskId
@@ -238,19 +254,20 @@ class WorkerManager(object):
                 taskFuture = self.__tasksInProgress.get(taskId)
 
             if taskFuture is None:
-                logger.debug('No future for task: %s', taskId)
+                logger.info('No future for task: %s', taskId)
                 return
 
             # Handle fragmented
             if result.isFragmented:
                 taskFuture._partial[result.fragmentId] = result
-                logger.debug('Setting result: %s', taskId)
+                logger.info('Setting result: %s', taskId)
                 if len(taskFuture._partial) == result.numFragments:
                     taskFuture.set([
-                        taskFuture._partial[i] for i in xrange(result.numFragments)
+                        taskFuture._partial[i]
+                        for i in xrange(result.numFragments)
                     ])
             else:
-                logger.debug('Setting result: %s', taskId)
+                logger.info('Setting result: %s', taskId)
                 taskFuture.set(result)
         except Exception, e:
             logger.error('Failed to parse message: %s', message)
@@ -268,13 +285,14 @@ class WorkerManager(object):
                     self.__tasksInProgressCondition.wait()
 
             # Poll for new messages
-            logger.debug('Polling for new results')
+            logger.info('Polling for new results')
             messages = None
             try:
+                self.__sqsStats.record_poll()
                 messages = resultQueue.receive_messages(
                     MessageAttributeNames=requiredAttributes,
                     MaxNumberOfMessages=MAX_SQS_REQUEST_MESSAGES)
-                logger.debug('Received %d messages', len(messages))
+                logger.info('Received %d messages', len(messages))
                 self.__result_handler_pool.map(
                     self.__handle_single_result_message, messages)
             except Exception, e:

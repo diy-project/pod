@@ -10,11 +10,11 @@ from threading import Semaphore
 from urlparse import urlparse
 
 from lib.proxy import AbstractRequestProxy, ProxyResponse
+from lib.stats import LambdaStatsModel, S3StatsModel
 from lib.workers import LambdaSqsTaskConfig, LambdaSqsTask, WorkerManager
 
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__file__)
+logger = logging.getLogger(__name__)
 
 _secureRandom = SystemRandom()
 
@@ -24,11 +24,19 @@ class ShortLivedLambdaProxy(AbstractRequestProxy):
 
     __lambda = boto3.client('lambda')
 
-    def __init__(self, functions, maxParallelRequests, s3Bucket):
+    def __init__(self, functions, maxParallelRequests, s3Bucket, stats):
         self.__functions = functions
         self.__lambdaRateSemaphore = Semaphore(maxParallelRequests)
         self.__s3Bucket = s3Bucket
+
+        if 'lambda' not in stats.models:
+            stats.register_model('lambda', LambdaStatsModel())
+        self.__lambdaStats = stats.get_model('lambda')
+
         if s3Bucket is not None:
+            if 's3' not in stats.models:
+                stats.register_model('s3', S3StatsModel())
+            self.__s3Stats = stats.get_model('s3')
             self.__s3 = boto3.client('s3')
             self.__s3DeletePool = ThreadPoolExecutor(1)
 
@@ -39,6 +47,7 @@ class ShortLivedLambdaProxy(AbstractRequestProxy):
         result = self.__s3.get_object(Bucket=self.__s3Bucket, Key=key)
         ret = result['Body'].read()
         self.__s3DeletePool.submit(self.__delete_object_from_s3, key)
+        self.__s3Stats.record_get(len(ret))
         return ret
 
     def request(self, method, url, headers, body):
@@ -55,9 +64,10 @@ class ShortLivedLambdaProxy(AbstractRequestProxy):
 
         self.__lambdaRateSemaphore.acquire()
         try:
-            response = self.__lambda.invoke(
-                FunctionName=_secureRandom.choice(self.__functions),
-                Payload=json.dumps(args))
+            with self.__lambdaStats.record():
+                response = self.__lambda.invoke(
+                    FunctionName=_secureRandom.choice(self.__functions),
+                    Payload=json.dumps(args))
         finally:
             self.__lambdaRateSemaphore.release()
 
@@ -88,10 +98,18 @@ class ShortLivedLambdaProxy(AbstractRequestProxy):
 class LongLivedLambdaProxy(AbstractRequestProxy):
     """Return a function that queues requests in SQS"""
 
-    def __init__(self, functions, maxLambdas, s3Bucket, verbose):
+    def __init__(self, functions, maxLambdas, s3Bucket, stats, verbose):
         self.__verbose = verbose
         self.__s3Bucket = s3Bucket
+
+        if 'lambda' not in stats.models:
+            stats.register_model('lambda', LambdaStatsModel())
+        self.__lambdaStats = stats.get_model('lambda')
+
         if s3Bucket is not None:
+            if 's3' not in stats.models:
+                stats.register_model('s3', S3StatsModel())
+            self.__s3Stats = stats.get_model('s3')
             self.__s3 = boto3.client('s3')
             self.__s3DeletePool = ThreadPoolExecutor(1)
 
@@ -114,21 +132,21 @@ class LongLivedLambdaProxy(AbstractRequestProxy):
                 return 4
 
             def pre_invoke_callback(self, workerId, workerArgs):
-                logger.debug('Starting worker: %d', workerId)
+                logger.info('Starting worker: %d', workerId)
                 workerArgs['longLived'] = True
                 if s3Bucket:
                     workerArgs['s3Bucket'] = s3Bucket
 
             def post_return_callback(self, workerId, workerResponse):
                 if workerResponse is not None:
-                    logger.debug('Worker %d ran for %dms and proxied %d '
+                    logger.info('Worker %d ran for %dms and proxied %d '
                                  'requests: Exit reason: %s',
                                  workerId,
                                  workerResponse['workerLifetime'],
                                  workerResponse['numRequestsProxied'],
                                  workerResponse['exitReason'])
 
-        self.workerManager = WorkerManager(ProxyTask())
+        self.workerManager = WorkerManager(ProxyTask(), stats)
 
     def __delete_object_from_s3(self, key):
         self.__s3.delete_object(Bucket=self.__s3Bucket, Key=key)
@@ -137,6 +155,7 @@ class LongLivedLambdaProxy(AbstractRequestProxy):
         result = self.__s3.get_object(Bucket=self.__s3Bucket, Key=key)
         ret = result['Body'].read()
         self.__s3DeletePool.submit(self.__delete_object_from_s3, key)
+        self.__s3Stats.record_get(len(ret))
         return ret
 
     def request(self, method, url, headers, data):
@@ -180,11 +199,11 @@ class LongLivedLambdaProxy(AbstractRequestProxy):
 
 class HybridLambdaProxy(LongLivedLambdaProxy):
 
-    def __init__(self, functions, numLambdas, s3Bucket, *args):
-        super(HybridLambdaProxy, self).__init__(functions, numLambdas,
-                                                s3Bucket, *args)
-        self.__shortLivedProxy = ShortLivedLambdaProxy(functions,
-                                                       numLambdas, s3Bucket)
+    def __init__(self, functions, maxLambdas, s3Bucket, stats, verbose):
+        super(HybridLambdaProxy, self).__init__(functions, maxLambdas,
+                                                s3Bucket, stats, verbose)
+        self.__shortLivedProxy = ShortLivedLambdaProxy(functions, maxLambdas,
+                                                       s3Bucket, stats)
         self.__lastRequestTime = 0
 
     def request(self, method, url, headers, body):

@@ -16,9 +16,13 @@ from lib.proxies.local import LocalProxy
 from lib.proxies.aws import ShortLivedLambdaProxy, LongLivedLambdaProxy,\
     HybridLambdaProxy
 from lib.proxies.mitm import MitmHttpsProxy
+from lib.stats import Stats, ProxyStatsModel
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__file__)
+logging.basicConfig(filename='main.log', filemode='w', level=logging.INFO)
+logger = logging.getLogger('main')
+logging.getLogger(
+    'botocore.vendored.requests.packages.urllib3.connectionpool'
+).setLevel(logging.ERROR)
 
 DEFAULT_PORT = 1080
 DEFAULT_MAX_LAMBDAS = 10
@@ -65,16 +69,18 @@ def get_args():
     return parser.parse_args()
 
 
-def build_local_proxy(args):
+def build_local_proxy(args, stats):
     """Request the resource locally"""
 
-    logger.warn('Running the proxy locally. This provides no privacy!')
+    print '  Running the proxy locally. This provides no privacy!'
 
-    localProxy = LocalProxy()
+    localProxy = LocalProxy(stats=stats)
     if args.enableMitm:
-        logger.warn('MITM proxy enabled. This is experimental!')
+        print '  MITM proxy enabled'
         mitmProxy = MitmHttpsProxy(localProxy,
-                                   MITM_CERT_PATH, MITM_KEY_PATH,
+                                   certfile=MITM_CERT_PATH,
+                                   keyfile=MITM_KEY_PATH,
+                                   stats=stats,
                                    overrideUserAgent=OVERRIDE_USER_AGENT,
                                    verbose=args.verbose)
         return ProxyInstance(requestProxy=localProxy, streamProxy=mitmProxy)
@@ -82,7 +88,7 @@ def build_local_proxy(args):
         return ProxyInstance(requestProxy=localProxy, streamProxy=localProxy)
 
 
-def build_lambda_proxy(args):
+def build_lambda_proxy(args, stats):
     """Request the resource using lambda"""
     functions = args.functions
     lambdaType = args.lambdaType
@@ -90,42 +96,67 @@ def build_lambda_proxy(args):
     s3Bucket = args.s3Bucket
     verbose = args.verbose
 
-    logger.info('Running the proxy with lambda')
+    print '  Running the proxy with lambda'
     if not functions:
-        logger.fatal('No functions specified')
+        print 'No functions specified'
         sys.exit(-1)
 
+    print '  Using functions:', ', '.join(functions)
+
     if lambdaType == 'short':
-        logger.info('Using short-lived lambdas')
-        lambdaProxy = ShortLivedLambdaProxy(functions, maxLambdas, s3Bucket)
+        print '  Using short-lived lambdas'
+        lambdaProxy = ShortLivedLambdaProxy(functions=functions,
+                                            maxParallelRequests=maxLambdas,
+                                            s3Bucket=s3Bucket,
+                                            stats=stats)
     elif lambdaType == 'long':
-        logger.info('Using long-lived lambdas')
-        lambdaProxy = LongLivedLambdaProxy(functions, maxLambdas,
-                                           s3Bucket, verbose)
+        print '  Using long-lived lambdas'
+        lambdaProxy = LongLivedLambdaProxy(functions=functions,
+                                           maxLambdas=maxLambdas,
+                                           s3Bucket=s3Bucket,
+                                           stats=stats,
+                                           verbose=verbose)
     else:
-        logger.info('Using hybrid lambdas')
-        lambdaProxy = HybridLambdaProxy(functions, maxLambdas,
-                                        s3Bucket, verbose)
+        print '  Using hybrid lambdas'
+        lambdaProxy = HybridLambdaProxy(functions=functions,
+                                        maxLambdas=maxLambdas,
+                                        s3Bucket=s3Bucket,
+                                        stats=stats,
+                                        verbose=verbose)
 
     if args.enableMitm:
         mitmProxy = MitmHttpsProxy(lambdaProxy,
-                                   MITM_CERT_PATH, MITM_KEY_PATH,
+                                   certfile=MITM_CERT_PATH,
+                                   keyfile=MITM_KEY_PATH,
+                                   stats=stats,
                                    overrideUserAgent=OVERRIDE_USER_AGENT,
                                    verbose=verbose)
         return ProxyInstance(requestProxy=lambdaProxy, streamProxy=mitmProxy)
     else:
-        logger.info('HTTPS will use the local proxy')
-        localProxy = LocalProxy()
+        print '  HTTPS will use the local proxy'
+        localProxy = LocalProxy(stats=stats)
         return ProxyInstance(requestProxy=lambdaProxy, streamProxy=localProxy)
 
 
-def build_handler(proxy, verbose):
+def build_handler(proxy, stats, verbose):
     """Construct a request handler"""
     if UserAgent:
         ua = UserAgent()
         get_user_agent = lambda: ua.random
     else:
         get_user_agent = lambda: DEFAULT_USER_AGENT
+
+    if 'proxy' not in stats.models:
+        stats.register_model('proxy', ProxyStatsModel())
+    proxyStats = stats.get_model('proxy')
+
+    def log_request_delay(function):
+        def wrapper(*args, **kwargs):
+            with proxyStats.record_delay():
+                function(*args, **kwargs)
+        return wrapper
+
+    handlerLogger = logging.getLogger('handler')
 
     class ProxyHandler(BaseHTTPRequestHandler):
 
@@ -142,13 +173,27 @@ def build_handler(proxy, verbose):
                 print '  %s: %s' % (header, response.headers[header])
             print 'content-len:', len(response.content)
 
+        def log_message(self, format, *args):
+            handlerLogger.info('%s - [%s] %s' %
+                               (self.client_address[0],
+                                self.log_date_time_string(),
+                                format % args))
+
+        @log_request_delay
         def _proxy_request(self):
             if verbose: self._print_request()
 
             method = self.command.upper()
             url = self.path
             headers = {}
+
+            # Approximate the length of the request
+            approxRequestLen = 2 +  len(url) + len(method) + \
+                               len(self.version_string())
+
             for header in self.headers:
+                value = self.headers[header]
+                approxRequestLen += len(header) + len(str(value)) + 4
                 if header in FILTERED_REQUEST_HEADERS:
                     continue
                 headers[header] = self.headers[header]
@@ -159,20 +204,29 @@ def build_handler(proxy, verbose):
             # TODO: which other requests have no bodies?
             if method != 'GET':
                 requestBody = self.rfile.read()
+                approxRequestLen += len(requestBody)
             else:
                 requestBody = None
+
+            proxyStats.record_bytes_up(approxRequestLen)
 
             response = proxy.request(method, url, headers, requestBody)
             if verbose: self._print_response(response)
 
+            # Approximate the response length
+            approxResponseLen = 20
+
             self.send_response(response.statusCode)
-            for header in response.headers:
+            for header, value in response.headers.iteritems():
                 if header in FILTERED_RESPONSE_HEADERS:
                     continue
-                self.send_header(header, response.headers[header])
+                approxResponseLen = len(header) + len(str(value)) + 4
+                self.send_header(header, value)
             self.send_header('Proxy-Connection', 'close')
             self.end_headers()
             self.wfile.write(response.content)
+            approxResponseLen += len(response.content)
+            proxyStats.record_bytes_down(approxResponseLen)
             return
 
         def _connect_request(self):
@@ -217,14 +271,17 @@ class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
 
 
 def main(host, port, args=None):
-    if args.runLocal:
-        proxy = build_local_proxy(args)
-    else:
-        proxy = build_lambda_proxy(args)
+    stats = Stats()
 
-    handler = build_handler(proxy, verbose=args.verbose)
+    print 'Configuring proxy'
+    if args.runLocal:
+        proxy = build_local_proxy(args, stats)
+    else:
+        proxy = build_lambda_proxy(args, stats)
+
+    handler = build_handler(proxy, stats, verbose=args.verbose)
     server = ThreadedHTTPServer((host, port), handler)
-    print 'Starting server, use <Ctrl-C> to stop'
+    print 'Starting proxy, use <Ctrl-C> to stop'
     server.serve_forever()
 
 

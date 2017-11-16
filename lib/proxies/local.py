@@ -1,9 +1,9 @@
 import errno
-import requests
 import select
 import socket
 
 from lib.proxy import AbstractRequestProxy, AbstractStreamProxy, proxy_single_request
+from lib.stats import ProxyStatsModel
 
 
 class LocalProxy(AbstractRequestProxy, AbstractStreamProxy):
@@ -16,8 +16,12 @@ class LocalProxy(AbstractRequestProxy, AbstractStreamProxy):
         def close(self):
             self.sock.close()
 
-    def __init__(self, maxIdleTimeout=60):
+    def __init__(self, stats, maxIdleTimeout=60):
         self.__connIdleTimeout = maxIdleTimeout
+
+        if 'proxy' not in stats.models:
+            stats.register_model('proxy', ProxyStatsModel())
+        self.__proxyModel = stats.get_model('proxy')
 
     def request(self, *args):
         return proxy_single_request(*args)
@@ -44,6 +48,10 @@ class LocalProxy(AbstractRequestProxy, AbstractStreamProxy):
                     if data:
                         try:
                             out.send(data)
+                            if out is cliSock:
+                                self.__proxyModel.record_bytes_down(len(data))
+                            else:
+                                self.__proxyModel.record_bytes_up(len(data))
                         except IOError, e:
                             if e.errno == errno.EPIPE:
                                 break

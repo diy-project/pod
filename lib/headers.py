@@ -1,7 +1,6 @@
 
 FILTERED_REQUEST_HEADERS = {
     'Proxy-Connection',
-    'Connection',
     'Upgrade-Insecure-Requests',
 }
 
