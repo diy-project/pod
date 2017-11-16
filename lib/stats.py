@@ -1,40 +1,51 @@
+import os
 import time
+
 from abc import abstractproperty
+from collections import OrderedDict
+from termcolor import colored
+from threading import Thread
 
 
 class _AbstractModel(object):
     pass
 
 
-class __AbstractCostModel(_AbstractModel):
+class _AbstractCostModel(_AbstractModel):
 
     @abstractproperty
     def cost(self):
-        pass
+        return 0.0
 
 
-class __AbstractTimeModel(_AbstractModel):
+class _AbstractTimeModel(_AbstractModel):
 
     @abstractproperty
     def time(self):
-        pass
+        return 0
 
 
-class __AbstractDataModel(_AbstractModel):
+class _AbstractDataModel(_AbstractModel):
 
     @abstractproperty
     def bytesDown(self):
-        pass
+        return 0
 
     @abstractproperty
-    def bytesUp(selfS):
-        pass
+    def bytesUp(self):
+        return 0
+
+
+MEGABYTE = 2 ** 20
+DEFAULT_COLORS = ('green', 'yellow', 'cyan', 'red')
+def _cls(): os.system('cls' if os.name == 'nt' else 'clear')
 
 
 class Stats(object):
 
     def __init__(self):
-        self.__models = {}
+        self.__models = OrderedDict()
+        self.__startTime = time.time()
 
     def register_model(self, name, model):
         assert isinstance(model, _AbstractModel)
@@ -43,15 +54,61 @@ class Stats(object):
     def get_model(self, name):
         return self.__models[name]
 
+    def _dump_live_summary(self, colors=DEFAULT_COLORS):
+        _cls()
+        print colored('Displaying stats for %d seconds' %
+                      int(time.time() - self.__startTime),
+                      'white', 'on_green')
+        numColors = len(colors)
+        totalCost = 0.0
+        for i, name in enumerate(self.__models):
+            model = self.__models[name]
+            color = colors[i % numColors]
+            values = []
+            if isinstance(model, ProxyStatsModel):
+                values.append(('count', '%#7d' % model.totalRequests))
+                values.append(('delay', '%#5dms' % int(model.meanDelay)))
+            if isinstance(model, _AbstractCostModel):
+                modelCost = model.cost
+                totalCost += modelCost
+                values.append(('cost', '$%#1.05f' % modelCost))
+            if isinstance(model, _AbstractTimeModel):
+                values.append(('time', '%#7ds' % (model.time / 1000)))
+            if isinstance(model, _AbstractDataModel):
+                MBDown = float(model.bytesDown) / MEGABYTE
+                MBUp = float(model.bytesUp) / MEGABYTE
+                values.append(('up', '%#5.06fMB' % MBUp))
+                values.append(('down', '%#5.04fMB' % MBDown))
+
+            print colored('[%#8s]' % name, color),\
+                '  '.join(['%s: %s' % x for x in values])
+
+        name = 'total'
+        color = DEFAULT_COLORS[(i + 1) % numColors]
+        print colored('[%#8s]' % name, color), 'cost: $%#1.05f' % totalCost
+
+
+    def start_live_summary(self, frequency=5):
+        # Only require threading if using this
+        this = self
+        def live_summary():
+            while True:
+                this._dump_live_summary()
+                time.sleep(frequency)
+        t = Thread(target=live_summary)
+        t.daemon = True
+        t.start()
+
     @property
     def models(self):
         return self.__models.keys()
 
 
-class LambdaStatsModel(__AbstractCostModel, __AbstractTimeModel):
+class LambdaStatsModel(_AbstractCostModel, _AbstractTimeModel):
 
-    PER_REQUEST_COST = 0.2 / 10 ** 6
-    PER_100MS_COST = 0.000000208
+    class Constants:
+        PER_REQUEST_COST = 0.2 / (10 ** 6)
+        PER_100MS_COST = 0.000000208
 
     def __init__(self):
         self._totalMillis = 0
@@ -59,8 +116,8 @@ class LambdaStatsModel(__AbstractCostModel, __AbstractTimeModel):
 
     @property
     def cost(self):
-        return (LambdaStatsModel.PER_REQUEST_COST * self._totalRequests
-                + self._totalMillis * LambdaStatsModel.PER_100MS_COST)
+        return (LambdaStatsModel.Constants.PER_REQUEST_COST * self._totalRequests
+                + self._totalMillis * LambdaStatsModel.Constants.PER_100MS_COST)
 
     @property
     def time(self):
@@ -75,7 +132,7 @@ class LambdaStatsModel(__AbstractCostModel, __AbstractTimeModel):
             self.__startTime = time.time()
 
         def __exit__(self, exc_type, exc_val, exc_tb):
-            runTime = time.time() - self.__startTime
+            runTime = int(time.time() - self.__startTime)
             self.__model._totalRequests += 1
             estMillisBilled = runTime * 1000
             if estMillisBilled % 100 != 0:
@@ -86,10 +143,11 @@ class LambdaStatsModel(__AbstractCostModel, __AbstractTimeModel):
         return LambdaStatsModel.Request(self)
 
 
-class SqsStatsModel(__AbstractCostModel, __AbstractDataModel):
+class SqsStatsModel(_AbstractCostModel, _AbstractDataModel):
 
-    PER_REQUEST_COST = 0.4 / 10 ** 6
-    MAX_REQUEST_SIZE = 64 * 1024
+    class Constants:
+        PER_REQUEST_COST = 0.4 / (10 ** 6)
+        MAX_REQUEST_SIZE = 64 * 1024
 
     def __init__(self):
         self.__totalMessagesReceived = 0
@@ -105,7 +163,7 @@ class SqsStatsModel(__AbstractCostModel, __AbstractDataModel):
 
     @property
     def cost(self):
-        return self.__totalRequests * SqsStatsModel.PER_REQUEST_COST
+        return self.__totalRequests * SqsStatsModel.Constants.PER_REQUEST_COST
 
     @property
     def bytesUp(self):
@@ -119,34 +177,36 @@ class SqsStatsModel(__AbstractCostModel, __AbstractDataModel):
         self.__totalPolls += 1
         self.__totalRequests += 1
 
-    def record_send(self, size=MAX_REQUEST_SIZE):
+    def record_send(self, size=Constants.MAX_REQUEST_SIZE):
         self.__totalMessagesSent += 1
         self.__totalBytesUp += size
-        requests = size / SqsStatsModel.MAX_REQUEST_SIZE
-        if size % SqsStatsModel.MAX_REQUEST_SIZE != 0:
+        requests = size / SqsStatsModel.Constants.MAX_REQUEST_SIZE
+        if size % SqsStatsModel.Constants.MAX_REQUEST_SIZE != 0:
             requests += 1
         # Assume someone on the other side is receiving the request
         # by polling and deleting it when done
         self.__totalRequests += 3 * requests
 
-    def record_receive(self, size=MAX_REQUEST_SIZE):
+    def record_receive(self, size=Constants.MAX_REQUEST_SIZE):
         self.__totalMessagesReceived += 1
         self.__totalBytesDown += 1
-        requests = size / SqsStatsModel.MAX_REQUEST_SIZE
-        if size % SqsStatsModel.MAX_REQUEST_SIZE != 0:
+        requests = size / SqsStatsModel.Constants.MAX_REQUEST_SIZE
+        if size % SqsStatsModel.Constants.MAX_REQUEST_SIZE != 0:
             requests += 1
 
         # Assume someone on the other side sent the request and
         # that we are deleting the message when done
         self.__totalRequests += 2 * requests
 
-class S3StatsModel(__AbstractCostModel, __AbstractDataModel):
 
-    PER_PUT_COST = 0.0055 / 1000
-    PER_GET_COST = 0.0044 / 10000
+class S3StatsModel(_AbstractCostModel, _AbstractDataModel):
 
-    DATA_STORAGE_COST = 0.0264  / 2 ** 30
-    DATA_RETRIEVAL_COST = 0.01 / 2 ** 30
+    class Constants:
+        PER_PUT_COST = 0.0055 / 1000
+        PER_GET_COST = 0.0044 / 10000
+
+        DATA_STORAGE_COST = 0.0264 / (2 ** 30)
+        DATA_RETRIEVAL_COST = 0.01 / (2 ** 30)
 
     def __init__(self, bothSides=True):
         self.__bothSides = bothSides
@@ -157,10 +217,10 @@ class S3StatsModel(__AbstractCostModel, __AbstractDataModel):
 
     @property
     def cost(self):
-        return (self.__totalPuts * S3StatsModel.PER_PUT_COST +
-                self.__totalGets * S3StatsModel.PER_GET_COST +
-                self.__totalBytesDown * S3StatsModel.DATA_RETRIEVAL_COST +
-                self.__totalBytesUp * S3StatsModel.DATA_STORAGE_COST)
+        return (self.__totalPuts * S3StatsModel.Constants.PER_PUT_COST +
+                self.__totalGets * S3StatsModel.Constants.PER_GET_COST +
+                self.__totalBytesDown * S3StatsModel.Constants.DATA_RETRIEVAL_COST +
+                self.__totalBytesUp * S3StatsModel.Constants.DATA_STORAGE_COST)
     
     @property
     def bytesUp(self):
@@ -191,9 +251,10 @@ class S3StatsModel(__AbstractCostModel, __AbstractDataModel):
         self.__totalBytesDown += size
 
 
-class ProxyStatsModel(__AbstractDataModel):
+class ProxyStatsModel(_AbstractDataModel):
 
     def __init__(self):
+        self.__startTime = time.time()
         self._totalRequestsProxied = 0
         self._totalRequestDelays = 0.0
         self.__totalBytesDown = 0
@@ -217,7 +278,9 @@ class ProxyStatsModel(__AbstractDataModel):
         return self._totalRequestsProxied
 
     @property
-    def meanLatency(self):
+    def meanDelay(self):
+        if self._totalRequestsProxied == 0:
+            return 0.0
         return float(self._totalRequestDelays) / self._totalRequestsProxied
 
     @property

@@ -18,9 +18,6 @@ class LocalProxy(AbstractRequestProxy, AbstractStreamProxy):
 
     def __init__(self, stats, maxIdleTimeout=60):
         self.__connIdleTimeout = maxIdleTimeout
-
-        if 'proxy' not in stats.models:
-            stats.register_model('proxy', ProxyStatsModel())
         self.__proxyModel = stats.get_model('proxy')
 
     def request(self, *args):

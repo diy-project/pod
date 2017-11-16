@@ -54,9 +54,6 @@ class MitmHttpsProxy(AbstractStreamProxy):
     def __init__(self, requestProxy, certfile, keyfile, stats,
                  overrideUserAgent=False, verbose=False):
         assert isinstance(requestProxy, AbstractRequestProxy)
-
-        if 'proxy' not in stats.models:
-            stats.register_model('proxy', ProxyStatsModel())
         self.__proxyModel = stats.get_model('proxy')
 
         self.__certCache = {}

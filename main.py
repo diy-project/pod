@@ -3,6 +3,7 @@
 import argparse
 import logging
 import sys
+import time
 
 from BaseHTTPServer import HTTPServer, BaseHTTPRequestHandler
 from fake_useragent import UserAgent
@@ -146,8 +147,6 @@ def build_handler(proxy, stats, verbose):
     else:
         get_user_agent = lambda: DEFAULT_USER_AGENT
 
-    if 'proxy' not in stats.models:
-        stats.register_model('proxy', ProxyStatsModel())
     proxyStats = stats.get_model('proxy')
 
     def log_request_delay(function):
@@ -272,6 +271,7 @@ class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
 
 def main(host, port, args=None):
     stats = Stats()
+    stats.register_model('proxy', ProxyStatsModel())
 
     print 'Configuring proxy'
     if args.runLocal:
@@ -282,6 +282,7 @@ def main(host, port, args=None):
     handler = build_handler(proxy, stats, verbose=args.verbose)
     server = ThreadedHTTPServer((host, port), handler)
     print 'Starting proxy, use <Ctrl-C> to stop'
+    stats.start_live_summary()
     server.serve_forever()
 
 
