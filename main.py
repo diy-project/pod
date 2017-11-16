@@ -53,10 +53,6 @@ def get_args():
                         default='short', type=str,
                         help='Type of lambda workers to use')
 
-    parser.add_argument('--large-transport', '-xl', dest='largeTransport',
-                        choices=['s3', 'sqs'], default='sqs', type=str,
-                        help='Option for long-lived lambdas to return '
-                             'messages larger than the SQS payload')
     parser.add_argument('--s3-bucket', '-s3', dest='s3Bucket', type=str,
                         help='s3Bucket to use for large file transport')
 
