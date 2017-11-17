@@ -1,7 +1,13 @@
 #!/bin/bash
 
 if [ ! -f proxy.zip ]; then
-    echo 'ERROR: proxy.zip not found. Please run ./collect.sh first.'
+    echo "ERROR: proxy.zip not found. Please run ./collect.sh first."
+    exit 1
+fi
+
+LAMBDA_PRIV_KEY_FILE="../lambda.private.txt" 
+if [ ! -f $LAMBDA_PRIV_KEY_FILE ]; then
+    echo "WARNING: $LAMBDA_PRIV_KEY_FILE not found. Please run gen_rsa_kp.py first."
     exit 1
 fi
 
@@ -21,6 +27,7 @@ else
 
     aws lambda create-function \
         --function-name $FUNCTION_NAME \
+        --environment "{\"Variables\":{\"RSA_PRIVATE_KEY\":\"$(cat $LAMBDA_PRIV_KEY_FILE)\"}}" \
         --zip-file fileb://proxy.zip \
         --runtime python2.7 \
         --region $REGION_NAME \
@@ -30,7 +37,7 @@ else
         --timeout 30
 fi
 
-echo 'Testing:' $FUNCTION_NAME
+echo "Testing:" $FUNCTION_NAME
 aws lambda invoke --invocation-type RequestResponse \
     --function-name $FUNCTION_NAME \
     --region $REGION_NAME \
