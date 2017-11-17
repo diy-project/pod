@@ -195,7 +195,7 @@ def build_handler(proxy, stats, verbose):
                 if header in FILTERED_REQUEST_HEADERS:
                     continue
                 headers[header] = self.headers[header]
-            headers['Connection'] = 'close'
+            headers['Connection'] = 'keep-alive'
             if OVERRIDE_USER_AGENT:
                 headers['User-Agent'] = get_user_agent()
 
@@ -221,6 +221,7 @@ def build_handler(proxy, stats, verbose):
                         continue
                     approxResponseLen = len(header) + len(str(value)) + 4
                     self.send_header(header, value)
+                self.send_header('Connection', 'close')
                 self.send_header('Proxy-Connection', 'close')
                 self.end_headers()
                 self.wfile.write(response.content)
