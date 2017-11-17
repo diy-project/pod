@@ -3,3 +3,4 @@ fake_useragent
 pyopenssl
 requests
 termcolor
+pycrypto

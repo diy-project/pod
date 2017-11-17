@@ -3,7 +3,7 @@
 SCRIPTDIR=`dirname '$BASH_SOURCE'`
 
 # Install requirements
-pip install requests -t $SCRIPTDIR
+pip install requests pycrypto -t $SCRIPTDIR
 
 # Copy shared libraries to the Lambda
 cp -r $SCRIPTDIR/../shared $SCRIPTDIR/

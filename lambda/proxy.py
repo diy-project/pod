@@ -8,6 +8,7 @@ import traceback
 
 from base64 import b64encode, b64decode
 from concurrent.futures import ThreadPoolExecutor
+from Crypto.Cipher import AES
 from threading import Semaphore
 
 from shared.proxy import proxy_single_request
@@ -28,6 +29,12 @@ MAX_LAMBDA_BODY_PAYLOAD_SIZE = int(5.8 * 1024 * 1024)
 
 def short_lived_handler(event, context):
     """Handle a single request and return it immediately"""
+    if 'ctext' in event:
+        nonce = event['nonce']
+        key = os.environ.get('PRE_SHARED_KEY')
+        cipher = AES.new(decryption_key, AES.MODE_GCM, nonce)
+        event = b64decode()
+
     method = event['method']
     url = event['url']
     requestHeaders = event['headers']
