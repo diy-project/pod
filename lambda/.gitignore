@@ -3,6 +3,7 @@ chardet
 idna
 requests
 urllib3
+Crypto
 shared
 *-info
 *.zip
