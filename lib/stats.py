@@ -192,12 +192,12 @@ class LambdaStatsModel(_AbstractCostModel, _AbstractTimeModel):
                 if estMillisBilled % 100 != 0:
                     estMillisBilled += (100 - estMillisBilled % 100)
                 self.__model._totalMillis += estMillisBilled
-                self.__model._timeBilledCost = (
+                self.__model._timeBilledCost += (
                     LambdaStatsModel.Constants.PER_100MS_COST * billingScale
                     * (estMillisBilled / 100))
             else:
                 self.__model._totalMillis += self.__billedMillis
-                self.__model._timeBilledCost = (
+                self.__model._timeBilledCost += (
                     LambdaStatsModel.Constants.PER_100MS_COST * billingScale
                     * (self.__billedMillis / 100))
 
