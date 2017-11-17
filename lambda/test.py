@@ -2,6 +2,7 @@
 
 import argparse
 import proxy
+from impl import long
 
 
 def get_args():
@@ -18,7 +19,7 @@ def get_args():
 
 class DummyContext(object):
     def get_remaining_time_in_millis(self):
-        return proxy.MIN_MILLIS_REMAINING + 1
+        return long.MIN_MILLIS_REMAINING + 1
 
 
 def main():
@@ -44,6 +45,7 @@ def main():
             event['s3Bucket'] = args.s3bucket
 
         proxy.DEBUG = True
+        long.DEBUG = True
 
         while True:
             print proxy.handler(event, DummyContext())

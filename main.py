@@ -13,8 +13,7 @@ from lib.headers import FILTERED_REQUEST_HEADERS, FILTERED_RESPONSE_HEADERS,\
     DEFAULT_USER_AGENT
 from lib.proxy import ProxyInstance
 from lib.proxies.local import LocalProxy
-from lib.proxies.aws import ShortLivedLambdaProxy, LongLivedLambdaProxy,\
-    HybridLambdaProxy
+from lib.proxies.aws import ShortLivedLambdaProxy, LongLivedLambdaProxy
 from lib.proxies.mitm import MitmHttpsProxy
 from lib.stats import Stats, ProxyStatsModel
 
@@ -29,6 +28,8 @@ DEFAULT_MAX_LAMBDAS = 100
 
 MITM_CERT_PATH = 'mitm.ca.pem'
 MITM_KEY_PATH = 'mitm.key.pem'
+
+LAMBDA_PUBLIC_KEY_PATH = 'lambda.public.pem'
 
 OVERRIDE_USER_AGENT = False
 
@@ -46,8 +47,12 @@ def get_args():
     parser.add_argument('--function', '-f', dest='functions', action='append',
                         help='Lambda functions by name (default-region) or ARN')
 
+    parser.add_argument('--encrypt', '-e', action='store_true',
+                        dest='enableEncryption',
+                        help='Enable full encryption to and from AWS lambda')
+
     parser.add_argument('--lambda-type', '-t', dest='lambdaType',
-                        choices=['short', 'long', 'hybrid'],
+                        choices=['short', 'long'],
                         default='short', type=str,
                         help='Type of lambda workers to use')
 
@@ -100,24 +105,24 @@ def build_lambda_proxy(args, stats):
 
     if lambdaType == 'short':
         print '  Using short-lived lambdas'
+        lambdaPubKeyFile = LAMBDA_PUBLIC_KEY_PATH if args.enableEncryption else None
         lambdaProxy = ShortLivedLambdaProxy(functions=functions,
                                             maxParallelRequests=maxLambdas,
                                             s3Bucket=s3Bucket,
+                                            pubKeyFile=lambdaPubKeyFile,
                                             stats=stats)
     elif lambdaType == 'long':
         print '  Using long-lived lambdas'
+        assert args.enableEncryption is False, \
+            'Full encryption is not supported for long lived proxies'
         lambdaProxy = LongLivedLambdaProxy(functions=functions,
                                            maxLambdas=maxLambdas,
                                            s3Bucket=s3Bucket,
                                            stats=stats,
                                            verbose=verbose)
     else:
-        print '  Using hybrid lambdas'
-        lambdaProxy = HybridLambdaProxy(functions=functions,
-                                        maxLambdas=maxLambdas,
-                                        s3Bucket=s3Bucket,
-                                        stats=stats,
-                                        verbose=verbose)
+        print '  Unsupported lambda type'
+        sys.exit(-1)
 
     if args.enableMitm:
         mitmProxy = MitmHttpsProxy(lambdaProxy,

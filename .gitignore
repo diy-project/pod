@@ -2,3 +2,7 @@
 *.pyc
 *.pem
 *.log
+mitm.ca.pem
+mitm.key.pem
+lambda.private.txt
+lambda.public.pem

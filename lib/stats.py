@@ -77,7 +77,7 @@ class Stats(object):
                 color = colors[i % numColors]
                 values = []
                 if isinstance(model, ProxyStatsModel):
-                    values.append('count: {:8d}'.format(model.totalRequests))
+                    values.append('reqs: {:9d}'.format(model.totalRequests))
                     values.append('delay: {:6d}ms'.format(int(model.meanDelay)))
                 if isinstance(model, _AbstractCostModel):
                     modelCost = model.cost
@@ -102,7 +102,7 @@ class Stats(object):
         finally:
             sio.close()
 
-    def start_live_summary(self, refreshRate=1, minRefreshRate=15):
+    def start_live_summary(self, refreshRate=1, minRefreshRate=10):
         this = self
         def live_summary():
             startDate = datetime.now()
@@ -120,12 +120,12 @@ class Stats(object):
                 prevSummary = summary
 
                 td = datetime.now() - startDate
-                sys.stdout.write(colored(
-                    'Displaying stats for %dd %02dh %02dm %02ds\r' %
-                    (td.days, td.seconds / 3600,
-                     (td.seconds % 3600) / 60,
-                     td.seconds % 60),
-                    'white', 'on_green'),)
+                statusLine = 'Displaying stats for %dd %dh %dm %ds' % \
+                    (td.days, td.seconds / 3600, (td.seconds % 3600) / 60,
+                     td.seconds % 60)
+                padLen = 80 - len(statusLine)
+                sys.stdout.write(colored(statusLine + (' ' * padLen) + '\r',
+                                         'white', 'on_green'))
                 sys.stdout.flush()
         t = Thread(target=live_summary)
         t.daemon = True

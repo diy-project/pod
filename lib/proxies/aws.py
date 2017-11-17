@@ -2,20 +2,26 @@ import boto3
 import hashlib
 import json
 import logging
-import time
 from base64 import b64encode, b64decode
 from random import SystemRandom
 from threading import Semaphore
-from urlparse import urlparse
 
 from concurrent.futures import ThreadPoolExecutor
+from Crypto.PublicKey import RSA
+from Crypto.Cipher import PKCS1_OAEP
+from Crypto.Random import get_random_bytes
 from lib.proxy import AbstractRequestProxy, ProxyResponse
 from lib.stats import LambdaStatsModel, S3StatsModel
 from lib.workers import LambdaSqsTaskConfig, LambdaSqsTask, WorkerManager
 
+from shared.crypto import *
+from shared.proxy import MAX_LAMBDA_BODY_SIZE
+
 logger = logging.getLogger(__name__)
 
-_secureRandom = SystemRandom()
+random = SystemRandom()
+
+SESSION_KEY_LENGTH = 16
 
 
 def _get_region_from_arn(arn):
@@ -28,14 +34,19 @@ class ShortLivedLambdaProxy(AbstractRequestProxy):
 
     __lambda = boto3.client('lambda')
 
-    MAX_BODY_LEN = int(5.8 * 1024 * 1024)
-
-    def __init__(self, functions, maxParallelRequests, s3Bucket, stats):
+    def __init__(self, functions, maxParallelRequests, s3Bucket,
+                 pubKeyFile, stats):
         self.__functions = functions
         self.__functionToClient = {}
         self.__regionToClient = {}
         self.__lambdaRateSemaphore = Semaphore(maxParallelRequests)
         self.__s3Bucket = s3Bucket
+
+        # Enable encryption
+        self.__rsaPubKey = None
+        if pubKeyFile is not None:
+            with open(pubKeyFile, 'rb') as ifs:
+                self.__rsaPubKey = RSA.importKey(ifs.read())
 
         if 'lambda' not in stats.models:
             stats.register_model('lambda', LambdaStatsModel())
@@ -86,36 +97,84 @@ class ShortLivedLambdaProxy(AbstractRequestProxy):
         self.__s3Stats.record_get(len(data))
         return key
 
+    def __prepare_request_body(self, invokeArgs, body, sessionKey):
+        encodedBody = b64encode(body)
+        if len(encodedBody) <= MAX_LAMBDA_BODY_SIZE:
+            invokeArgs['body64'] = encodedBody
+        elif self.__s3Bucket is not None:
+            if sessionKey is not None:
+                s3Data, s3Tag = encrypt_with_gcm(sessionKey, body,
+                                                 S3_REQUEST_NONCE)
+                invokeArgs['s3Tag'] = b64encode(s3Tag)
+            else:
+                s3Data = body
+            requestS3Key = self.__put_object_into_s3(s3Data)
+            invokeArgs['s3Key'] = requestS3Key
+
+    def __prepare_encrypted_request(self, invokeArgs, sessionKey):
+        ciphertext, tag = encrypt_with_gcm(sessionKey,
+                                           json.dumps(invokeArgs),
+                                           REQUEST_NONCE)
+        cipher = PKCS1_OAEP.new(self.__rsaPubKey)
+        key = cipher.encrypt(sessionKey)
+        return {
+            'ciphertext': b64encode(ciphertext),
+            'tag': b64encode(tag),
+            'key': b64encode(key)
+        }
+
+    def __handle_encrypted_response(self, response, sessionKey):
+        ciphertext = b64decode(response['ciphertext'])
+        tag = b64decode(response['tag'])
+        plaintext = decrypt_with_gcm(sessionKey, ciphertext, tag,
+                                     RESPONSE_NONCE)
+        return json.loads(plaintext)
+
+    def __handle_response_body(self, response, symmetricKey):
+        content = b''
+        if 'content64' in response:
+            content = b64decode(response['content64'])
+        elif 's3Key' in response:
+            content = self.__load_object_from_s3(response['s3Key'])
+            if symmetricKey is not None:
+                tag = b64decode(response['s3Tag'])
+                content = decrypt_with_gcm(symmetricKey, content, tag,
+                                           S3_RESPONSE_NONCE)
+        return content
+
     def request(self, method, url, headers, body):
         logger.debug('Proxying %s %s with Lamdba', method, url)
-        args = {
-            'method': method,
-            'url': url,
-            'headers': headers,
-        }
+        sessionKey = None
+        if self.__rsaPubKey is not None:
+            sessionKey = get_random_bytes(SESSION_KEY_LENGTH)
+
         requestS3Key = None
         try:
+            invokeArgs = {
+                'method': method,
+                'url': url,
+                'headers': headers,
+            }
             if body is not None:
-                encodedBody = b64encode(body)
-                if len(encodedBody) <= ShortLivedLambdaProxy.MAX_BODY_LEN:
-                    args['body64'] = encodedBody
-                elif self.__s3Bucket is not None:
-                    requestS3Key = self.__put_object_into_s3(encodedBody)
-                    args['s3Key'] = requestS3Key
+                self.__prepare_request_body(invokeArgs, body, sessionKey)
             if self.__s3Bucket is not None:
-                args['s3Bucket'] = self.__s3Bucket
+                invokeArgs['s3Bucket'] = self.__s3Bucket
 
-            function = _secureRandom.choice(self.__functions)
+            if sessionKey is not None:
+                invokeArgs = self.__prepare_encrypted_request(invokeArgs,
+                                                              sessionKey)
+
+            function = random.choice(self.__functions)
             lambdaClient = self.__get_lambda_client(function)
 
             self.__lambdaRateSemaphore.acquire()
             try:
                 with self.__lambdaStats.record() as billingObject:
-                    response = lambdaClient.invoke(
+                    invokeResponse = lambdaClient.invoke(
                         FunctionName=function,
-                        Payload=json.dumps(args),
+                        Payload=json.dumps(invokeArgs),
                         LogType='Tail')
-                    billingObject.parse_log(response['LogResult'])
+                    billingObject.parse_log(invokeResponse['LogResult'])
             finally:
                 self.__lambdaRateSemaphore.release()
         finally:
@@ -123,25 +182,22 @@ class ShortLivedLambdaProxy(AbstractRequestProxy):
                 self.__s3DeletePool.submit(self.__delete_object_from_s3,
                                            requestS3Key)
 
-        if response['StatusCode'] != 200:
-            logger.error('%s: status=%d', response['FunctionError'],
-                         response['StatusCode'])
+        if invokeResponse['StatusCode'] != 200:
+            logger.error('%s: status=%d', invokeResponse['FunctionError'],
+                         invokeResponse['StatusCode'])
+            return ProxyResponse(statusCode=500, headers={}, content='')
+        if 'FunctionError' in invokeResponse:
+            logger.error('%s error: %s', invokeResponse['FunctionError'],
+                         invokeResponse['Payload'].read())
             return ProxyResponse(statusCode=500, headers={}, content='')
 
-        if 'FunctionError' in response:
-            logger.error('%s error: %s', response['FunctionError'],
-                         response['Payload'].read())
-            return ProxyResponse(statusCode=500, headers={}, content='')
+        response = json.loads(invokeResponse['Payload'].read())
+        if sessionKey is not None:
+            response = self.__handle_encrypted_response(response, sessionKey)
 
-        payload = json.loads(response['Payload'].read())
-        statusCode = payload['statusCode']
-        headers = payload['headers']
-        if 'content64' in payload:
-            content = b64decode(payload['content64'])
-        elif 's3Key' in payload:
-            content = self.__load_object_from_s3(payload['s3Key'])
-        else:
-            content = b''
+        statusCode = response['statusCode']
+        headers = response['headers']
+        content = self.__handle_response_body(response, sessionKey)
         return ProxyResponse(statusCode=statusCode, headers=headers,
                              content=content)
 
@@ -180,7 +236,7 @@ class LongLivedLambdaProxy(AbstractRequestProxy):
 
             @property
             def lambda_function(self):
-                return _secureRandom.choice(functions)
+                return random.choice(functions)
 
             @property
             def max_workers(self):
@@ -255,42 +311,3 @@ class LongLivedLambdaProxy(AbstractRequestProxy):
         responseHeaders = payload['headers']
         return ProxyResponse(statusCode=statusCode, headers=responseHeaders,
                              content=content)
-
-class HybridLambdaProxy(LongLivedLambdaProxy):
-
-    def __init__(self, functions, maxLambdas, s3Bucket, stats, verbose):
-        super(HybridLambdaProxy, self).__init__(functions, maxLambdas,
-                                                s3Bucket, stats, verbose)
-        self.__shortLivedProxy = ShortLivedLambdaProxy(functions, maxLambdas,
-                                                       s3Bucket, stats)
-        self.__lastRequestTime = 0
-
-    def request(self, method, url, headers, body):
-        if self.should_use_short_lived_proxy(method, url, headers, body):
-            logger.debug('Using short proxy for: %s %s', method, url[:50])
-            return self.__shortLivedProxy.request(method, url, headers, body)
-        else:
-            logger.debug('Using long proxy for: %s %s', method, url[:50])
-            return super(HybridLambdaProxy, self).request(
-                method, url, headers, body)
-
-    SHORT_LIVED_TYPES = ['.html', '.js', '.css', '.png', '.jpg', '.json']
-
-    def should_use_short_lived_proxy(self, method, url, headers, body):
-        curTime = time.time()
-        try:
-            if curTime - self.__lastRequestTime > 0.5: return True
-        finally:
-            self.__lastRequestTime = curTime
-
-        # TODO: maybe use header info for cross-origin
-        if method.upper() != 'GET':
-            return False
-        parsedUrl = urlparse(url)
-        if len(parsedUrl.query) > 10:
-            return False
-        if len(parsedUrl.path.split('/')) < 3:
-            return True
-        if any(x in parsedUrl.path for x in HybridLambdaProxy.SHORT_LIVED_TYPES):
-            return True
-        return False
