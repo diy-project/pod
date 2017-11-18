@@ -66,6 +66,7 @@ class LambdaSqsTask(SqsMessage):
 
     @staticmethod
     def from_message(message):
+        """Populates the task from a SQS message"""
         task = LambdaSqsTask(message)
         task.taskId = message.message_id
         return task
@@ -111,6 +112,7 @@ class LambdaSqsResult(SqsMessage):
 
     @staticmethod
     def from_message(message):
+        """Populates the result from a SQS message"""
         taskId = message.message_attributes[LambdaSqsResult.TASK_ID]['StringValue']
         if LambdaSqsResult.FRAGMENT_ID in message.message_attributes:
             fragmentId = int(message.message_attributes[LambdaSqsResult.FRAGMENT_ID]['StringValue'])

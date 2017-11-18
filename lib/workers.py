@@ -150,17 +150,18 @@ class WorkerManager(object):
         logger.info('Created task queue: %s', taskQueueName)
 
         resultQueueAttributes = {
-            'MessageRetentionPeriod': str(self.__config.message_retention_period),
+            'MessageRetentionPeriod':
+                str(self.__config.message_retention_period),
             'ReceiveMessageWaitTimeSeconds': str(20),
         }
-        resultQueueName = '%s_result_%d' % (self.__config.queue_prefix, currentTime)
+        resultQueueName = '%s_result_%d' % (self.__config.queue_prefix,
+                                            currentTime)
         self.__resultQueueName = resultQueueName
         resultQueue = sqs.create_queue(
             QueueName=resultQueueName,
             Attributes=resultQueueAttributes)
         atexit.register(lambda: resultQueue.delete())
         logger.info('Created result queue: %s', resultQueueName)
-
 
     def execute(self, task, timeout=None):
         """Enqueue a message in the task queue"""

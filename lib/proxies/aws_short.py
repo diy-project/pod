@@ -12,9 +12,9 @@ from Crypto.Cipher import PKCS1_OAEP
 from Crypto.Random import get_random_bytes
 from lib.proxy import AbstractRequestProxy, ProxyResponse
 from lib.stats import LambdaStatsModel, S3StatsModel
-from lib.workers import LambdaSqsTaskConfig, LambdaSqsTask, WorkerManager
 
-from shared.crypto import *
+from shared.crypto import REQUEST_NONCE, RESPONSE_NONCE, S3_REQUEST_NONCE,\
+    S3_RESPONSE_NONCE, decrypt_with_gcm, encrypt_with_gcm
 from shared.proxy import MAX_LAMBDA_BODY_SIZE
 
 logger = logging.getLogger(__name__)
@@ -40,24 +40,27 @@ class ShortLivedLambdaProxy(AbstractRequestProxy):
         self.__functionToClient = {}
         self.__regionToClient = {}
         self.__lambdaRateSemaphore = Semaphore(maxParallelRequests)
-        self.__s3Bucket = s3Bucket
-
-        # Enable encryption
-        self.__rsaPubKey = None
-        if pubKeyFile is not None:
-            with open(pubKeyFile, 'rb') as ifs:
-                self.__rsaPubKey = RSA.importKey(ifs.read())
 
         if 'lambda' not in stats.models:
             stats.register_model('lambda', LambdaStatsModel())
         self.__lambdaStats = stats.get_model('lambda')
 
+        self.__enableS3 = False
         if s3Bucket is not None:
+            self.__s3Bucket = s3Bucket
             if 's3' not in stats.models:
                 stats.register_model('s3', S3StatsModel())
             self.__s3Stats = stats.get_model('s3')
             self.__s3 = boto3.client('s3')
             self.__s3DeletePool = ThreadPoolExecutor(1)
+            self.__enableS3 = True
+
+        # Enable encryption
+        self.__enableEncryption = False
+        if pubKeyFile is not None:
+            with open(pubKeyFile, 'rb') as ifs:
+                self.__rsaCipher = PKCS1_OAEP.new(RSA.importKey(ifs.read()))
+                self.__enableEncryption = True
 
     def __get_lambda_client(self, function):
         """Get a lambda client from the right region"""
@@ -78,9 +81,11 @@ class ShortLivedLambdaProxy(AbstractRequestProxy):
         return client
 
     def __delete_object_from_s3(self, key):
+        assert self.__enableS3 is True
         self.__s3.delete_object(Bucket=self.__s3Bucket, Key=key)
 
     def __load_object_from_s3(self, key):
+        assert self.__enableS3 is True
         result = self.__s3.get_object(Bucket=self.__s3Bucket, Key=key)
         ret = result['Body'].read()
         self.__s3DeletePool.submit(self.__delete_object_from_s3, key)
@@ -88,6 +93,7 @@ class ShortLivedLambdaProxy(AbstractRequestProxy):
         return ret
 
     def __put_object_into_s3(self, data):
+        assert self.__enableS3 is True
         md5 = hashlib.md5()
         md5.update(data)
         key = md5.hexdigest()
@@ -101,8 +107,9 @@ class ShortLivedLambdaProxy(AbstractRequestProxy):
         encodedBody = b64encode(body)
         if len(encodedBody) <= MAX_LAMBDA_BODY_SIZE:
             invokeArgs['body64'] = encodedBody
-        elif self.__s3Bucket is not None:
-            if sessionKey is not None:
+        elif self.__enableS3:
+            if self.__enableEncryption:
+                assert sessionKey is not None
                 s3Data, s3Tag = encrypt_with_gcm(sessionKey, body,
                                                  S3_REQUEST_NONCE)
                 invokeArgs['s3Tag'] = b64encode(s3Tag)
@@ -112,11 +119,11 @@ class ShortLivedLambdaProxy(AbstractRequestProxy):
             invokeArgs['s3Key'] = requestS3Key
 
     def __prepare_encrypted_request(self, invokeArgs, sessionKey):
+        assert sessionKey is not None
         ciphertext, tag = encrypt_with_gcm(sessionKey,
                                            json.dumps(invokeArgs),
                                            REQUEST_NONCE)
-        cipher = PKCS1_OAEP.new(self.__rsaPubKey)
-        key = cipher.encrypt(sessionKey)
+        key = self.__rsaCipher.encrypt(sessionKey)
         return {
             'ciphertext': b64encode(ciphertext),
             'tag': b64encode(tag),
@@ -124,28 +131,30 @@ class ShortLivedLambdaProxy(AbstractRequestProxy):
         }
 
     def __handle_encrypted_response(self, response, sessionKey):
+        assert sessionKey is not None
         ciphertext = b64decode(response['ciphertext'])
         tag = b64decode(response['tag'])
         plaintext = decrypt_with_gcm(sessionKey, ciphertext, tag,
                                      RESPONSE_NONCE)
         return json.loads(plaintext)
 
-    def __handle_response_body(self, response, symmetricKey):
+    def __handle_response_body(self, response, sessionKey):
         content = b''
         if 'content64' in response:
             content = b64decode(response['content64'])
         elif 's3Key' in response:
             content = self.__load_object_from_s3(response['s3Key'])
-            if symmetricKey is not None:
+            if self.__enableEncryption:
+                assert sessionKey is not None
                 tag = b64decode(response['s3Tag'])
-                content = decrypt_with_gcm(symmetricKey, content, tag,
+                content = decrypt_with_gcm(sessionKey, content, tag,
                                            S3_RESPONSE_NONCE)
         return content
 
     def request(self, method, url, headers, body):
         logger.debug('Proxying %s %s with Lamdba', method, url)
         sessionKey = None
-        if self.__rsaPubKey is not None:
+        if self.__enableEncryption:
             sessionKey = get_random_bytes(SESSION_KEY_LENGTH)
 
         requestS3Key = None
@@ -157,10 +166,10 @@ class ShortLivedLambdaProxy(AbstractRequestProxy):
             }
             if body is not None:
                 self.__prepare_request_body(invokeArgs, body, sessionKey)
-            if self.__s3Bucket is not None:
+            if self.__enableS3:
                 invokeArgs['s3Bucket'] = self.__s3Bucket
 
-            if sessionKey is not None:
+            if self.__enableEncryption:
                 invokeArgs = self.__prepare_encrypted_request(invokeArgs,
                                                               sessionKey)
 
@@ -192,122 +201,11 @@ class ShortLivedLambdaProxy(AbstractRequestProxy):
             return ProxyResponse(statusCode=500, headers={}, content='')
 
         response = json.loads(invokeResponse['Payload'].read())
-        if sessionKey is not None:
+        if self.__enableEncryption:
             response = self.__handle_encrypted_response(response, sessionKey)
 
         statusCode = response['statusCode']
         headers = response['headers']
         content = self.__handle_response_body(response, sessionKey)
         return ProxyResponse(statusCode=statusCode, headers=headers,
-                             content=content)
-
-
-class LongLivedLambdaProxy(AbstractRequestProxy):
-    """Return a function that queues requests in SQS"""
-
-    def __init__(self, functions, maxLambdas, s3Bucket, stats, verbose):
-
-        # Supporting this across regions is not a priority since that would
-        # incur costs for SQS and S3, and be error prone.
-        if len(functions) > 1 and 'arn:' in functions[0]:
-            raise NotImplementedError(
-                'Only a single function may be specified by name for a '
-                'long lived proxy')
-
-        self.__verbose = verbose
-        self.__s3Bucket = s3Bucket
-
-        if 'lambda' not in stats.models:
-            stats.register_model('lambda', LambdaStatsModel())
-        self.__lambdaStats = stats.get_model('lambda')
-
-        if s3Bucket is not None:
-            if 's3' not in stats.models:
-                stats.register_model('s3', S3StatsModel())
-            self.__s3Stats = stats.get_model('s3')
-            self.__s3 = boto3.client('s3')
-            self.__s3DeletePool = ThreadPoolExecutor(1)
-
-        class ProxyTask(LambdaSqsTaskConfig):
-
-            @property
-            def queue_prefix(self):
-                return 'lambda-proxy'
-
-            @property
-            def lambda_function(self):
-                return random.choice(functions)
-
-            @property
-            def max_workers(self):
-                return maxLambdas
-
-            @property
-            def load_factor(self):
-                return 4
-
-            def pre_invoke_callback(self, workerId, workerArgs):
-                logger.info('Starting worker: %d', workerId)
-                workerArgs['longLived'] = True
-                if s3Bucket:
-                    workerArgs['s3Bucket'] = s3Bucket
-
-            def post_return_callback(self, workerId, workerResponse):
-                if workerResponse is not None:
-                    logger.info('Worker %d ran for %dms and proxied %d '
-                                 'requests: Exit reason: %s',
-                                 workerId,
-                                 workerResponse['workerLifetime'],
-                                 workerResponse['numRequestsProxied'],
-                                 workerResponse['exitReason'])
-
-        self.workerManager = WorkerManager(ProxyTask(), stats)
-
-    def __delete_object_from_s3(self, key):
-        self.__s3.delete_object(Bucket=self.__s3Bucket, Key=key)
-
-    def __load_object_from_s3(self, key):
-        result = self.__s3.get_object(Bucket=self.__s3Bucket, Key=key)
-        ret = result['Body'].read()
-        self.__s3DeletePool.submit(self.__delete_object_from_s3, key)
-        self.__s3Stats.record_get(len(ret))
-        return ret
-
-    def request(self, method, url, headers, data):
-        task = LambdaSqsTask()
-        if data:
-            task.add_binary_attribute('data', data)
-        task.set_body(json.dumps({
-            'method': method,
-            'url': url,
-            'headers': headers
-        }))
-        result = self.workerManager.execute(task, timeout=10)
-        if result is None:
-            return ProxyResponse(statusCode=500, headers={}, content='')
-
-        if type(result) is list:
-            # Fragmented response
-            payload = {}
-            dataChunks = []
-            for part in result:
-                if part.has_attribute('data'):
-                    dataChunks.append(part.get_binary_attribute('data'))
-                if len(part.body) > 1:
-                    # We use a hack to send practically empty bodies
-                    payload.update(json.loads(b64decode(part.body).decode('zlib')))
-            content = b''.join(dataChunks)
-        else:
-            # Single message
-            payload = json.loads(b64decode(result.body).decode('zlib'))
-            if result.has_attribute('s3'):
-                key = result.get_string_attribute('s3')
-                content = self.__load_object_from_s3(key)
-            elif result.has_attribute('data'):
-                content = result.get_binary_attribute('data')
-            else:
-                content = b''
-        statusCode = payload['statusCode']
-        responseHeaders = payload['headers']
-        return ProxyResponse(statusCode=statusCode, headers=responseHeaders,
                              content=content)

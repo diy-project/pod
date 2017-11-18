@@ -8,7 +8,8 @@ from base64 import b64encode, b64decode
 from Crypto.PublicKey import RSA
 from Crypto.Cipher import PKCS1_OAEP
 
-from shared.crypto import *
+from shared.crypto import REQUEST_NONCE, RESPONSE_NONCE, S3_REQUEST_NONCE,\
+    S3_RESPONSE_NONCE, decrypt_with_gcm, encrypt_with_gcm, PRIVATE_KEY_ENV_VAR
 from shared.proxy import proxy_single_request, MAX_LAMBDA_BODY_SIZE
 
 DEBUG = os.environ.get('VERBOSE', False)

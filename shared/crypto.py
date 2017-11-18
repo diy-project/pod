@@ -2,7 +2,7 @@
 Note: this file will be copied to the Lambda too. Do not
 add dependencies carelessly.
 """
-from Crypto.Cipher import AES
+from Crypto.Cipher import AES, PKCS1_OAEP
 
 
 PRIVATE_KEY_ENV_VAR = 'RSA_PRIVATE_KEY'

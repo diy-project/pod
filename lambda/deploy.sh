@@ -24,6 +24,13 @@ if [[ $REPLY =~ ^[Yy]$ ]]; then
     aws lambda update-function-code \
         --function-name $FUNCTION_NAME \
         --zip-file fileb://proxy.zip
+
+    # TODO: should set the private key in a more secure manner
+    aws lambda update-function-configuration \
+        --function-name $FUNCTION_NAME \
+        --environment "{\"Variables\":{\"RSA_PRIVATE_KEY\":\"$(cat $LAMBDA_PRIV_KEY_FILE)\"}}" \
+        --memory-size $LAMBDA_SIZE \
+        --timeout $LAMBDA_TIMEOUT
 else
     echo -n "Enter the ARN of IAM role configured for Lambda, S3 and SQS: "
     read ROLE_NAME
