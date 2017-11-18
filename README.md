@@ -9,6 +9,27 @@ streaming up to 4K videos on youtube.
 
 ![alt text](screenshot.png 'Run the proxy with live stats.')
 
+How it works
+------------
+POD runs as a server on your local machine. When configured with POD 
+(localhost:1080) as its proxy, your browser sends HTTP requests to POD and
+POD performs these requests on a Lambda function. For HTTPS traffic, POD
+requires a root CA certificate to be installed in the browser's certificate
+store. The local server decrypts the traffic locally and reissues the
+HTTPS requests, verifying the target server's identity in the process.
+
+When a server returns a response that is too large to return directly in a
+Lambda response body, POD stores the response in S3 temporarily, before
+deleting it.
+
+All traffic to AWS lambda is encrypted in flight with TLS. POD can also
+encrypt requests and metadata to make it visible only to the Lambda. The
+local server sends a session key, encrypted with the Lambda's public key,
+for each request. This key is used to encrypt both the request and the
+response, including any data that is placed in S3. For security purposes,
+the Lambda's private key can be encrypted with the Amazon KMS, otherwise
+it is stored in the Lambda's environment.
+
 Usage instructions
 ------------------
 
