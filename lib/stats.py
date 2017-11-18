@@ -102,7 +102,8 @@ class Stats(object):
         finally:
             sio.close()
 
-    def start_live_summary(self, refreshRate=1, minRefreshRate=10):
+    def start_live_summary(self, refreshRate=1, minRefreshRate=10,
+                           logFileName=None):
         this = self
         def live_summary():
             startDate = datetime.now()
@@ -123,6 +124,8 @@ class Stats(object):
                 statusLine = 'Displaying stats for %dd %dh %dm %ds' % \
                     (td.days, td.seconds / 3600, (td.seconds % 3600) / 60,
                      td.seconds % 60)
+                if logFileName is not None:
+                    statusLine += ' (see %s for details)' % logFileName
                 padLen = 80 - len(statusLine)
                 sys.stdout.write(colored(statusLine + (' ' * padLen) + '\r',
                                          'white', 'on_green'))

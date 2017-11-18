@@ -18,7 +18,8 @@ from lib.proxies.aws_long import LongLivedLambdaProxy
 from lib.proxies.mitm import MitmHttpsProxy
 from lib.stats import Stats, ProxyStatsModel
 
-logging.basicConfig(filename='main.log', filemode='w', level=logging.INFO)
+LOG_FILE = 'main.log'
+logging.basicConfig(filename=LOG_FILE, filemode='w', level=logging.INFO)
 logger = logging.getLogger('main')
 logging.getLogger(
     'botocore.vendored.requests.packages.urllib3.connectionpool'
@@ -294,7 +295,7 @@ def main(host, port, args=None):
     handler = build_handler(proxy, stats, verbose=args.verbose)
     server = ThreadedHTTPServer((host, port), handler)
     print 'Starting proxy, use <Ctrl-C> to stop'
-    stats.start_live_summary(1)
+    stats.start_live_summary(refreshRate=1, logFileName=LOG_FILE)
     server.serve_forever()
 
 
