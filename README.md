@@ -1,10 +1,10 @@
-Penniless-Proxy: A serverless HTTP(S) proxy
+Proxy-On-Demand: A serverless HTTP(S) proxy
 ===========================================
-An on-demand, browser-compatible (tested with Firefox), proxy backed by AWS 
+An on-demand, browser-compatible, proxy backed by AWS 
 Lambda for anonymous browsing and web crawling. For normal web browsing,
-Penniless-Proxy costs fractions of cents to operate and is price
+Proxy-On-Demand (POD) costs fractions of cents to operate and is price
 competitive with tiny EC2 instances, fitting entirely in the free-tier.
-For heavy loads, Penniless-Proxy provides scalability in real-time,
+For heavy loads, POD provides scalability in real-time,
 streaming up to 4K videos on youtube.
 
 ![alt text](screenshot.png 'Run the proxy with live stats.')
@@ -13,7 +13,7 @@ Usage instructions
 ------------------
 
 #### Prerequisites
-- A web browser
+- A web browser (tested with Firefox)
 - OpenSSL installed (to generate root CA certs)
 - AWS credentials setup with `aws configure`
 
@@ -60,4 +60,3 @@ will be registered.
 - To register functions in regions other than the default region, you must use
 the function's full arn.
 - Note: functions in different regions may lead to high billing rates for S3.
-
