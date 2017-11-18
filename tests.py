@@ -4,6 +4,7 @@ import json
 import unittest
 import os
 import random
+import sys
 
 from BaseHTTPServer import BaseHTTPRequestHandler, HTTPServer
 from threading import Thread
@@ -16,6 +17,17 @@ import shared.proxy as proxy
 from main import DEFAULT_MAX_LAMBDAS, DEFAULT_PORT, build_local_proxy, \
     build_lambda_proxy, build_handler
 from gen_rsa_kp import generate_key_pair
+
+
+def silence_stdout(func):
+    def decorator(*args, **kwargs):
+        try:
+            with open(os.devnull, 'wb') as devnull:
+                sys.stdout = devnull
+                func(*args, **kwargs)
+        finally:
+            sys.stdout = sys.__stdout__
+    return decorator
 
 
 class TestCrypto(unittest.TestCase):
@@ -104,6 +116,7 @@ class TestProxy(unittest.TestCase):
 
 class TestRsaKeygen(unittest.TestCase):
 
+    @silence_stdout
     def test_keygen(self):
         generate_key_pair(os.devnull, os.devnull)
 
@@ -131,6 +144,7 @@ class TestBuildProxy(unittest.TestCase):
         args.verbose = False
         return args, stats
 
+    @silence_stdout
     def test_build_local_no_mitm(self):
         args, stats = TestBuildProxy._get_default_setup()
         args.local = True
@@ -138,6 +152,7 @@ class TestBuildProxy(unittest.TestCase):
         proxy = build_local_proxy(args, stats)
         build_handler(proxy, stats, verbose=True)
 
+    @silence_stdout
     def test_build_local_with_mitm(self):
         args, stats = TestBuildProxy._get_default_setup()
         args.local = True
@@ -145,6 +160,7 @@ class TestBuildProxy(unittest.TestCase):
         proxy = build_local_proxy(args, stats)
         build_handler(proxy, stats, verbose=True)
 
+    @silence_stdout
     def test_build_lambda_with_mitm(self):
         args, stats = TestBuildProxy._get_default_setup()
         args.enableMitm = True
