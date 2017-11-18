@@ -41,21 +41,24 @@ def proxy_single_request(method, url, headers, body, gzipResult=False):
         responseBody = response.content
 
         # TODO: this does not handle nested encoding
-        if (TRANSFER_ENCODING in responseHeaders and
-                    responseHeaders[TRANSFER_ENCODING] == 'chunked'):
-            del responseHeaders[TRANSFER_ENCODING]
+        hasContentEncoding = False
+        for header in responseHeaders.keys():
+            if (TRANSFER_ENCODING.lower() == header.lower()
+                and responseHeaders[header] == 'chunked'):
+                del responseHeaders[header]
 
-        if (CONTENT_ENCODING in responseHeaders and
-                    responseHeaders[CONTENT_ENCODING]
-                in AUTO_DECODED_CONTENTS):
-            del responseHeaders[CONTENT_ENCODING]
+            if (CONTENT_ENCODING.lower() == header.lower()):
+                if responseHeaders[header] in AUTO_DECODED_CONTENTS:
+                    del responseHeaders[header]
+                else:
+                    hasContentEncoding = True
 
         if gzipResult and len(responseBody) > MIN_COMPRESS_SIZE:
-            if (ACCEPT_ENCODING in responseHeaders and
-                        'gzip' in responseHeaders[ACCEPT_ENCODING] and
-                        CONTENT_ENCODING not in responseHeaders):
-                if (CONTENT_TYPE in responseHeaders and
-                            'text' in responseHeaders[CONTENT_TYPE]):
+            if (ACCEPT_ENCODING in responseHeaders
+                and 'gzip' in responseHeaders[ACCEPT_ENCODING]
+                and not hasContentEncoding):
+                if (CONTENT_TYPE in responseHeaders
+                    and 'text' in responseHeaders[CONTENT_TYPE]):
                     responseBody = responseBody.encode('zlib')
                     responseHeaders[CONTENT_ENCODING] = 'gzip'
 

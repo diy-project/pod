@@ -141,6 +141,7 @@ class TestBuildProxy(unittest.TestCase):
         args.s3Bucket = None
         args.maxLambdas = DEFAULT_MAX_LAMBDAS
         args.enableMitm = False
+        args.disableStats = False
         args.verbose = False
         return args, stats
 

@@ -68,6 +68,8 @@ def get_args():
                         dest='enableMitm',
                         help='Run as a MITM for TLS traffic')
     parser.add_argument('--verbose', '-v', action='store_true')
+    parser.add_argument('--no-stats', '-z', dest='disableStats',
+                        action='store_true')
     return parser.parse_args()
 
 
@@ -295,7 +297,8 @@ def main(host, port, args=None):
     handler = build_handler(proxy, stats, verbose=args.verbose)
     server = ThreadedHTTPServer((host, port), handler)
     print 'Starting proxy, use <Ctrl-C> to stop'
-    stats.start_live_summary(refreshRate=1, logFileName=LOG_FILE)
+    if not args.disableStats:
+        stats.start_live_summary(refreshRate=1, logFileName=LOG_FILE)
     server.serve_forever()
 
 
