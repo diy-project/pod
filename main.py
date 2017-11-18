@@ -13,7 +13,8 @@ from lib.headers import FILTERED_REQUEST_HEADERS, FILTERED_RESPONSE_HEADERS,\
     DEFAULT_USER_AGENT
 from lib.proxy import ProxyInstance
 from lib.proxies.local import LocalProxy
-from lib.proxies.aws import ShortLivedLambdaProxy, LongLivedLambdaProxy
+from lib.proxies.aws_short import ShortLivedLambdaProxy
+from lib.proxies.aws_long import LongLivedLambdaProxy
 from lib.proxies.mitm import MitmHttpsProxy
 from lib.stats import Stats, ProxyStatsModel
 
@@ -172,7 +173,15 @@ def build_handler(proxy, stats, verbose):
             print 'content-len:', len(response.content)
 
         def log_message(self, format, *args):
+            """Override the default logging to not print ot stdout"""
             handlerLogger.info('%s - [%s] %s' %
+                               (self.client_address[0],
+                                self.log_date_time_string(),
+                                format % args))
+
+        def log_error(self, format, *args):
+            """Override the default logging to not print ot stdout"""
+            handlerLogger.error('%s - [%s] %s' %
                                (self.client_address[0],
                                 self.log_date_time_string(),
                                 format % args))
@@ -199,9 +208,9 @@ def build_handler(proxy, stats, verbose):
             if OVERRIDE_USER_AGENT:
                 headers['User-Agent'] = get_user_agent()
 
-            # TODO: which other requests have no bodies?
-            if method != 'GET':
-                requestBody = self.rfile.read()
+            if 'Content-Length' in self.headers:
+                contentLength = int(self.headers['Content-Length'])
+                requestBody = self.rfile.read(contentLength)
                 approxRequestLen += len(requestBody)
             else:
                 requestBody = None

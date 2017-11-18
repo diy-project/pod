@@ -60,7 +60,7 @@ class MitmHttpsProxy(AbstractStreamProxy):
 
         # Config
         self.__verbose = verbose
-        self.___overrideUserAgent = overrideUserAgent
+        self.__overrideUserAgent = overrideUserAgent
 
         # Single request proxy
         self.__requestProxy = requestProxy
@@ -102,8 +102,8 @@ class MitmHttpsProxy(AbstractStreamProxy):
         cert.get_subject().C = 'US'
         cert.get_subject().ST = 'California'
         cert.get_subject().L = 'Palo Alto'
-        cert.get_subject().O = 'Stanford University'
-        cert.get_subject().OU = 'MITM Proxy'
+        cert.get_subject().O = 'DIY Project'
+        cert.get_subject().OU = 'Lambda MITM Proxy'
         cert.get_subject().CN = host
         cert.gmtime_adj_notBefore(0)
         cert.gmtime_adj_notAfter(24 * 60 * 60)
@@ -159,7 +159,7 @@ class MitmHttpsProxy(AbstractStreamProxy):
             if header == 'Content-Length':
                 contentLength = int(value)
             headers[header] = value
-        if self.___overrideUserAgent:
+        if self.__overrideUserAgent:
             headers['User-Agent'] = DEFAULT_USER_AGENT
         headers['Connection'] = 'keep-alive'
 

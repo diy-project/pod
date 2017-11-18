@@ -12,17 +12,21 @@ from shared.crypto import PRIVATE_KEY_ENV_VAR
 PRIVATE_KEY_FILE = 'lambda.private.txt'
 PUBLIC_KEY_FILE = 'lambda.public.pem'
 
-privateKey = RSA.generate(2048)
-publickey = privateKey.publickey()
+def generate_key_pair(privateKeyFile, publicKeyFile):
+    privateKey = RSA.generate(2048)
+    publickey = privateKey.publickey()
 
-print 'Writing private key to', PRIVATE_KEY_FILE
-with open(PRIVATE_KEY_FILE, 'wb') as ofs:
-    ofs.write(privateKey.exportKey('DER').encode('hex'))
+    print 'Writing private key to', privateKeyFile
+    with open(privateKeyFile, 'wb') as ofs:
+        ofs.write(privateKey.exportKey('DER').encode('hex'))
 
-print 'Writing public key to', PUBLIC_KEY_FILE
-with open(PUBLIC_KEY_FILE, 'wb') as ofs:
-    ofs.write(publickey.exportKey('PEM'))
+    print 'Writing public key to', publicKeyFile
+    with open(publicKeyFile, 'wb') as ofs:
+        ofs.write(publickey.exportKey('PEM'))
 
-print "Done! Now, add the contents of %s to your lambda's environment " \
-      "as %s or let the deploy script do it for you" % (
-    PRIVATE_KEY_FILE, PRIVATE_KEY_ENV_VAR)
+    print "Done! Now, add the contents of %s to your lambda's environment " \
+          "as %s or let the deploy script do it for you." % (
+        privateKeyFile, PRIVATE_KEY_ENV_VAR)
+
+if __name__ == '__main__':
+    generate_key_pair(PRIVATE_KEY_FILE, PUBLIC_KEY_FILE)
