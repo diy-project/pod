@@ -29,6 +29,9 @@ SECONDS_BETWEEN_REQUESTS = 0.050
 def get_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('hostAndPort', type=str)
+    parser.add_argument('--no-measure', '-nm', action='store_true',
+                        dest='noMeasure',
+                        help='Regenerate plot with cached measurements')
     parser.add_argument('--output-prefix', type=str, default='output',
                         dest='outputPrefix',
                         help='File prefix to write the resulting plots and '
@@ -54,17 +57,18 @@ def take_measurements(hostAndPort, enableProxy):
     results = OrderedDict()
     while True:
         size = 2 ** power
-        print '  %dB:' % size,
-        sys.stdout.flush()
         if size > MAX_SIZE_TO_REQUEST:
             break
+
+        print '  %dB:' % size,
+        sys.stdout.flush()
         resultsForSize = []
         for _ in xrange(NUM_TRIALS_PER_SIZE):
             try:
                 resultsForSize.append(single_measurement(hostAndPort, size,
                                                          enableProxy))
             except Exception, e:
-                print e
+                print >> sys.stderr, e
             time.sleep(SECONDS_BETWEEN_REQUESTS)
             print '.',
             sys.stdout.flush()
@@ -110,9 +114,10 @@ def plot_measurements(noProxy, withProxy, outputFile):
                  label='no proxy')
     ax0.errorbar(x, withProxyMeanLatency, yerr=withProxySdLatency, fmt='-bx',
                  label='with proxy')
-    ax0.set_title('Average request Latency vs. response size (N=%d)' % nSamples)
+    ax0.set_title('Average request latency vs. response size (N=%d)' % nSamples)
     ax0.set_xscale('log')
     ax0.set_ylabel('milliseconds')
+    ax0.set_yscale('log')
     ax0.legend(loc=0)
 
     ax1.errorbar(x, noProxyMeanRate, yerr=noProxySdRate, fmt='-ro',
@@ -122,22 +127,29 @@ def plot_measurements(noProxy, withProxy, outputFile):
     ax1.set_title('Average data rate vs. response size (N=%d)' % nSamples)
     ax1.set_xscale('log')
     ax1.set_ylabel('kbps')
+    ax0.set_yscale('log')
     ax1.legend(loc=0)
 
     plt.savefig(outputFile)
 
 
 def main(args):
-    noProxy = take_measurements(args.hostAndPort, False)
-    withProxy = take_measurements(args.hostAndPort, True)
+    if args.noMeasure:
+        with open(args.outputPrefix + '-no-proxy.json', 'r') as ifs:
+            noProxy = json.load(ifs, object_pairs_hook=OrderedDict)
+        with open(args.outputPrefix + '-with-proxy.json', 'r') as ifs:
+            withProxy = json.load(ifs, object_pairs_hook=OrderedDict)
+    else:
+        noProxy = take_measurements(args.hostAndPort, False)
+        withProxy = take_measurements(args.hostAndPort, True)
+
+        with open(args.outputPrefix + '-no-proxy.json', 'w') as ofs:
+            json.dump(noProxy, ofs, indent=4)
+
+        with open(args.outputPrefix + '-with-proxy.json', 'w') as ofs:
+            json.dump(withProxy, ofs, indent=4)
 
     plot_measurements(noProxy, withProxy, args.outputPrefix + '.pdf')
-
-    with open(args.outputPrefix + '-no-proxy.json', 'w') as ofs:
-        json.dump(noProxy, ofs, indent=4)
-
-    with open(args.outputPrefix + '-with-proxy.json', 'w') as ofs:
-        json.dump(noProxy, ofs, indent=4)
 
 
 if __name__ == '__main__':
