@@ -1,4 +1,5 @@
 #!/usr/bin/env python
+"""A server that sends the number of random bytes requested by a client"""
 
 import argparse
 import ssl
@@ -31,7 +32,7 @@ class RandomHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header('Content-Length', int(sizeRequested))
         # Prevent compression by sending binary
-        self.send_header('Content-Type', 'text/text')
+        self.send_header('Content-Type', 'application/binary')
         self.end_headers()
         bytesSent = 0
         while bytesSent < sizeRequested:

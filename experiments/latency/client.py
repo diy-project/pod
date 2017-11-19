@@ -2,21 +2,28 @@
 
 import argparse
 import json
+import sys
 import time
 
 import numpy as np
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
 from subprocess import check_output
 
 from collections import OrderedDict
 
+DEBUG = False
 
-NUM_TRIALS_PER_SIZE = 10
-SECONDS_BETWEEN_REQUESTS = 0.250
+if DEBUG:
+    MAX_SIZE_TO_REQUEST = 10 * 1024
+    NUM_TRIALS_PER_SIZE = 3
+else:
+    MAX_SIZE_TO_REQUEST = 16 * 1024 * 1024
+    NUM_TRIALS_PER_SIZE = 10
 
-MAX_SIZE_TO_REQUEST = 64 * 1024 * 1024
-MAX_SIZE_TO_REQUEST = 1 * 1024 * 1024
+SECONDS_BETWEEN_REQUESTS = 0.050
 
 
 def get_args():
@@ -42,10 +49,13 @@ def single_measurement(hostAndPort, size, enableProxy):
 
 
 def take_measurements(hostAndPort, enableProxy):
+    print 'Fetching %s with proxy=%s' % (hostAndPort, str(enableProxy))
     power = 0
     results = OrderedDict()
     while True:
         size = 2 ** power
+        print '  %dB:' % size,
+        sys.stdout.flush()
         if size > MAX_SIZE_TO_REQUEST:
             break
         resultsForSize = []
@@ -56,14 +66,18 @@ def take_measurements(hostAndPort, enableProxy):
             except Exception, e:
                 print e
             time.sleep(SECONDS_BETWEEN_REQUESTS)
+            print '.',
+            sys.stdout.flush()
         results[size] = resultsForSize
         power += 1
+        print ''
+        sys.stdout.flush()
     return results
 
 
 def plot_measurements(noProxy, withProxy, outputFile):
-    def index_entries(tupleList, i):
-        return [x[i] for x in tupleList]
+    def index_entries(tupleList, i, func=lambda x: x):
+        return [func(x[i]) for x in tupleList]
 
     def unpack_results(results):
         meanLatency = []
@@ -71,10 +85,14 @@ def plot_measurements(noProxy, withProxy, outputFile):
         meanRate = []
         sdRate = []
         for size in results:
-            meanLatency.append(np.mean(index_entries(results[size], 0)))
-            sdLatency.append(np.std(index_entries(results[size], 0)))
-            meanRate.append(np.mean(index_entries(results[size], 1)))
-            sdRate.append(np.std(index_entries(results[size], 1)))
+            meanLatency.append(np.mean(index_entries(results[size], 0,
+                                                     lambda x: x * 1000)))
+            sdLatency.append(np.std(index_entries(results[size], 0,
+                                                  lambda x: x * 1000)))
+            meanRate.append(np.mean(index_entries(results[size], 1,
+                                    lambda x: x * 8 / 1024)))
+            sdRate.append(np.std(index_entries(results[size], 1,
+                                               lambda x: x * 8 / 1024)))
         return meanLatency, sdLatency, meanRate, sdRate
 
     noProxyMeanLatency, noProxySdLatency, noProxyMeanRate, noProxySdRate = \
@@ -88,31 +106,39 @@ def plot_measurements(noProxy, withProxy, outputFile):
 
     fig, (ax0, ax1) = plt.subplots(nrows=2, sharex=True)
 
-    ax0.errorbar(x, noProxyMeanLatency, yerr=noProxySdLatency, fmt='-o')
-    ax0.errorbar(x, withProxyMeanLatency, yerr=withProxySdLatency, fmt='-x')
+    ax0.errorbar(x, noProxyMeanLatency, yerr=noProxySdLatency, fmt='-ro',
+                 label='no proxy')
+    ax0.errorbar(x, withProxyMeanLatency, yerr=withProxySdLatency, fmt='-bx',
+                 label='with proxy')
     ax0.set_title('Average request Latency vs. response size (N=%d)' % nSamples)
+    ax0.set_xscale('log')
+    ax0.set_ylabel('milliseconds')
+    ax0.legend(loc=0)
 
-    ax1.errorbar(x, noProxyMeanRate, yerr=noProxySdRate, fmt='-o')
-    ax1.errorbar(x, noProxyMeanRate, yerr=noProxySdRate, fmt='-o')
+    ax1.errorbar(x, noProxyMeanRate, yerr=noProxySdRate, fmt='-ro',
+                 label='no proxy')
+    ax1.errorbar(x, withProxyMeanRate, yerr=withProxySdRate, fmt='-bx',
+                 label='with proxy')
     ax1.set_title('Average data rate vs. response size (N=%d)' % nSamples)
+    ax1.set_xscale('log')
+    ax1.set_ylabel('kbps')
+    ax1.legend(loc=0)
 
     plt.savefig(outputFile)
 
 
 def main(args):
     noProxy = take_measurements(args.hostAndPort, False)
-    # withProxy = take_measurements(args.hostAndPort, True)
-    withProxy = noProxy
+    withProxy = take_measurements(args.hostAndPort, True)
 
-    plot_measurements(noProxy, withProxy, args.outputPrefx + '.pdf')
+    plot_measurements(noProxy, withProxy, args.outputPrefix + '.pdf')
 
-    with open(args.outputPrefx + '-no-proxy.json', 'w') as ofs:
-        ofs.write(json.dumps(noProxy, indent=4))
-        ofs.write('\n')
+    with open(args.outputPrefix + '-no-proxy.json', 'w') as ofs:
+        json.dump(noProxy, ofs, indent=4)
 
-    with open(args.outputPrefx + '-with-proxy.json', 'w') as ofs:
-        ofs.write(json.dumps(noProxy, indent=4))
-        ofs.write('\n')
+    with open(args.outputPrefix + '-with-proxy.json', 'w') as ofs:
+        json.dump(noProxy, ofs, indent=4)
+
 
 if __name__ == '__main__':
     main(get_args())
