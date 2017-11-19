@@ -2,7 +2,6 @@
 
 import argparse
 import ssl
-import time
 
 from BaseHTTPServer import HTTPServer, BaseHTTPRequestHandler
 from SocketServer import ThreadingMixIn
@@ -14,9 +13,9 @@ KEYFILE = 'server.key.pem'
 
 
 print 'Preloading random data'
-with open('/dev/random', 'rb') as ifs:
-    ONE_KB = 1 << 10
-    CACHED_RANDOM_KB = ifs.read(ONE_KB)
+with open('/dev/urandom', 'rb') as ifs:
+    ONE_MB = 1 << 20
+    CACHED_RANDOM_MB = ifs.read(ONE_MB)
     print 'Done loading random data'
 
 
@@ -36,8 +35,8 @@ class RandomHandler(BaseHTTPRequestHandler):
         self.end_headers()
         bytesSent = 0
         while bytesSent < sizeRequested:
-            bytesToSend = min(sizeRequested - bytesSent, ONE_KB)
-            self.wfile.write(CACHED_RANDOM_KB[:bytesToSend])
+            bytesToSend = min(sizeRequested - bytesSent, ONE_MB)
+            self.wfile.write(CACHED_RANDOM_MB[:bytesToSend])
             bytesSent += bytesToSend
             print bytesSent
 
