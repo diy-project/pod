@@ -299,12 +299,15 @@ def main(host, port, args=None):
     print 'Starting proxy, use <Ctrl-C> to stop'
     if not args.disableStats:
         stats.start_live_summary(refreshRate=1, logFileName=LOG_FILE)
-    server.serve_forever()
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    server.server_close()
+    server.shutdown()
+    print 'Exiting'
 
 
 if __name__ == '__main__':
     args = get_args()
-    try:
-        main(args.host, args.port, args)
-    except KeyboardInterrupt:
-        print 'exiting'
+    main(args.host, args.port, args)
