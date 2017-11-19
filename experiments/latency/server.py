@@ -38,7 +38,6 @@ class RandomHandler(BaseHTTPRequestHandler):
             bytesToSend = min(sizeRequested - bytesSent, ONE_MB)
             self.wfile.write(CACHED_RANDOM_MB[:bytesToSend])
             bytesSent += bytesToSend
-            print bytesSent
 
 
 class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
