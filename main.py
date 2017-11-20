@@ -4,19 +4,20 @@ import argparse
 import logging
 import sys
 
-from BaseHTTPServer import HTTPServer, BaseHTTPRequestHandler
+from BaseHTTPServer import BaseHTTPRequestHandler
 from fake_useragent import UserAgent
-from SocketServer import ThreadingMixIn
 from termcolor import colored
 
 from lib.headers import FILTERED_REQUEST_HEADERS, FILTERED_RESPONSE_HEADERS,\
     DEFAULT_USER_AGENT
+from lib.message_server import start_local_message_server
 from lib.proxy import ProxyInstance
 from lib.proxies.local import LocalProxy
 from lib.proxies.aws_short import ShortLivedLambdaProxy
 from lib.proxies.aws_long import LongLivedLambdaProxy
 from lib.proxies.mitm import MitmHttpsProxy
 from lib.stats import Stats, ProxyStatsModel
+from lib.utils import ThreadedHTTPServer
 
 LOG_FILE = 'main.log'
 logging.basicConfig(filename=LOG_FILE, filemode='w', level=logging.INFO)
@@ -34,6 +35,8 @@ MITM_KEY_PATH = 'mitm.key.pem'
 LAMBDA_PUBLIC_KEY_PATH = 'lambda.public.pem'
 
 OVERRIDE_USER_AGENT = False
+
+LOCAL_MESSAGE_SERVER_PORT = 1081
 
 
 def get_args():
@@ -58,8 +61,16 @@ def get_args():
                         default='short', type=str,
                         help='Type of lambda workers to use')
 
-    parser.add_argument('--s3-bucket', '-s3', dest='s3Bucket', type=str,
-                        help='s3Bucket to use for large file transport')
+    dataTransfer = parser.add_mutually_exclusive_group()
+    dataTransfer.add_argument('--s3-bucket', '-s3', dest='s3Bucket', type=str,
+                              help='s3Bucket to use for large file transport')
+    dataTransfer.add_argument('--message-server-host-and-port', '-ms', type=str,
+                              dest='messageServerHostAndPort',
+                              help='Host and port to send messages to. If '
+                                   'running with a public IP, this should '
+                                   'be <public-ip>:%d. Otherwise, this should '
+                                   'be the <host>:<port> for reverse port '
+                                   'forwarding.' % LOCAL_MESSAGE_SERVER_PORT)
 
     parser.add_argument('--max-lambdas', '-j', type=int,
                         default=DEFAULT_MAX_LAMBDAS, dest='maxLambdas',
@@ -92,7 +103,7 @@ def build_local_proxy(args, stats):
         return ProxyInstance(requestProxy=localProxy, streamProxy=localProxy)
 
 
-def build_lambda_proxy(args, stats):
+def build_lambda_proxy(args, stats, messageServer):
     """Request the resource using lambda"""
     functions = args.functions
     lambdaType = args.lambdaType
@@ -114,6 +125,7 @@ def build_lambda_proxy(args, stats):
                                             maxParallelRequests=maxLambdas,
                                             s3Bucket=s3Bucket,
                                             pubKeyFile=lambdaPubKeyFile,
+                                            messageServer=messageServer,
                                             stats=stats)
     elif lambdaType == 'long':
         print '  Using long-lived lambdas'
@@ -280,22 +292,27 @@ def build_handler(proxy, stats, verbose):
     return ProxyHandler
 
 
-class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
-    """Handle requests in a separate thread."""
-
-
 def main(host, port, args=None):
     stats = Stats()
     stats.register_model('proxy', ProxyStatsModel())
+
+    messageServer = None
+    if args.messageServerHostAndPort is not None:
+        print "Starting message server locally on port %d. Don't forget to" \
+              "set-up a reverse tunnel at %s for remote access" % (
+            LOCAL_MESSAGE_SERVER_PORT, args.messageServerHostAndPort)
+        messageServer = start_local_message_server(LOCAL_MESSAGE_SERVER_PORT,
+                                                   args.messageServerHostAndPort)
 
     print 'Configuring proxy'
     if args.runLocal:
         proxy = build_local_proxy(args, stats)
     else:
-        proxy = build_lambda_proxy(args, stats)
+        proxy = build_lambda_proxy(args, stats, messageServer)
 
     handler = build_handler(proxy, stats, verbose=args.verbose)
     server = ThreadedHTTPServer((host, port), handler)
+
     print 'Starting proxy, use <Ctrl-C> to stop'
     if not args.disableStats:
         stats.start_live_summary(refreshRate=1, logFileName=LOG_FILE)
@@ -305,6 +322,8 @@ def main(host, port, args=None):
         pass
     server.server_close()
     server.shutdown()
+    if messageServer is not None:
+        messageServer.shutdown()
     print 'Exiting'
 
 

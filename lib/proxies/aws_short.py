@@ -34,7 +34,9 @@ class ShortLivedLambdaProxy(AbstractRequestProxy):
     """Invoke a lambda for each request"""
 
     def __init__(self, functions, maxParallelRequests, s3Bucket,
-                 pubKeyFile, stats):
+                 pubKeyFile, messageServer, stats):
+        assert not (messageServer is not None and s3Bucket is not None)
+
         self.__functions = functions
         self.__functionToClient = {}
         self.__regionToClient = {}
@@ -45,6 +47,11 @@ class ShortLivedLambdaProxy(AbstractRequestProxy):
             stats.register_model('lambda', LambdaStatsModel())
         self.__lambdaStats = stats.get_model('lambda')
 
+        # Use local message server to receive large payloads
+        self.__enableMessageServer = messageServer is not None
+        self.__messageServer = messageServer
+
+        # Use s3 to send and receive large payloads
         self.__enableS3 = False
         if s3Bucket is not None:
             self.__s3Bucket = s3Bucket
@@ -151,14 +158,21 @@ class ShortLivedLambdaProxy(AbstractRequestProxy):
             content = b64decode(response['content64'])
             if self.__enableEncryption:
                 assert sessionKey is not None
-                content = decrypt_with_gcm(sessionKey, content,
-                                           b64decode(response['contentTag']),
+                tag = b64decode(response['contentTag'])
+                content = decrypt_with_gcm(sessionKey, content, tag,
                                            RESPONSE_BODY_NONCE)
         elif 's3Key' in response:
             content = self.__load_object_from_s3(response['s3Key'])
             if self.__enableEncryption:
                 assert sessionKey is not None
                 tag = b64decode(response['s3Tag'])
+                content = decrypt_with_gcm(sessionKey, content, tag,
+                                           RESPONSE_BODY_NONCE)
+        elif 'messageId' in response:
+            content = self.__messageServer.get_message(response['messageId']).content
+            if self.__enableEncryption:
+                assert sessionKey is not None
+                tag = b64decode(response['messageTag'])
                 content = decrypt_with_gcm(sessionKey, content, tag,
                                            RESPONSE_BODY_NONCE)
         return content
@@ -178,6 +192,8 @@ class ShortLivedLambdaProxy(AbstractRequestProxy):
             }
             if self.__enableS3:
                 invokeArgs['s3Bucket'] = self.__s3Bucket
+            if self.__enableMessageServer:
+                invokeArgs['messageServer'] = self.__messageServer.publicHostAndPort
             if self.__enableEncryption:
                 invokeArgs = self.__prepare_encrypted_metadata(invokeArgs,
                                                                sessionKey)
