@@ -33,7 +33,7 @@ MITM_KEY_PATH = 'mitm.key.pem'
 
 LAMBDA_PUBLIC_KEY_PATH = 'lambda.public.pem'
 
-OVERRIDE_USER_AGENT = True
+OVERRIDE_USER_AGENT = False
 
 
 def get_args():

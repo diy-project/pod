@@ -8,8 +8,9 @@ from base64 import b64encode, b64decode
 from Crypto.PublicKey import RSA
 from Crypto.Cipher import PKCS1_OAEP
 
-from shared.crypto import REQUEST_NONCE, RESPONSE_NONCE, S3_REQUEST_NONCE,\
-    S3_RESPONSE_NONCE, decrypt_with_gcm, encrypt_with_gcm, PRIVATE_KEY_ENV_VAR
+from shared.crypto import REQUEST_META_NONCE, RESPONSE_META_NONCE, \
+    REQUEST_BODY_NONCE, RESPONSE_BODY_NONCE, \
+    decrypt_with_gcm, encrypt_with_gcm, PRIVATE_KEY_ENV_VAR
 from shared.proxy import proxy_single_request, MAX_LAMBDA_BODY_SIZE
 
 DEBUG = os.environ.get('VERBOSE', False)
@@ -23,15 +24,37 @@ if rsaPrivKey is not None:
     RSA_CIPHER = PKCS1_OAEP.new(RSA.importKey(rsaPrivKey.decode('hex')))
 
 
-def decrypt_encrypted_event(event):
+def decrypt_encrypted_metadata(event):
     encryptedKey = b64decode(event['key'])
-    ciphertext = b64decode(event['ciphertext'])
-    tag = b64decode(event['tag'])
+    ciphertext = b64decode(event['meta64'])
+    tag = b64decode(event['metaTag'])
 
     sessionKey = RSA_CIPHER.decrypt(encryptedKey)
 
-    cleartext = decrypt_with_gcm(sessionKey, ciphertext, tag, REQUEST_NONCE)
+    cleartext = decrypt_with_gcm(sessionKey, ciphertext, tag,
+                                 REQUEST_META_NONCE)
     return sessionKey, json.loads(cleartext)
+
+
+def decrypt_encrypted_body(event, sessionKey, s3BucketName):
+    if 'body64' in event:
+        bodyData = b64decode(event['body64'])
+        if sessionKey is not None:
+            tag = b64decode(event['bodyTag'])
+            requestBody = decrypt_with_gcm(sessionKey, bodyData, tag,
+                                           REQUEST_BODY_NONCE)
+        else:
+            requestBody = bodyData
+    elif 's3Key' in event:
+        assert s3BucketName is not None
+        requestBody = get_request_body_from_s3(s3BucketName, event['s3Key'])
+        if sessionKey is not None:
+            tag = b64decode(event['s3Tag'])
+            requestBody = decrypt_with_gcm(sessionKey, requestBody, tag,
+                                           REQUEST_BODY_NONCE)
+    else:
+        requestBody = None
+    return requestBody
 
 
 def get_request_body_from_s3(bucketName, key):
@@ -49,32 +72,51 @@ def put_response_body_in_s3(bucketName, data):
     return key
 
 
+def encrypt_response_metadata(metadata, sessionKey):
+    ciphertext, tag = encrypt_with_gcm(sessionKey, json.dumps(metadata),
+                                       RESPONSE_META_NONCE)
+    return {'meta64': b64encode(ciphertext), 'metaTag': b64encode(tag)}
+
+
+def prepare_response_content(content, sessionKey, s3BucketName):
+    ret = {}
+    if not s3BucketName or len(content) < MAX_LAMBDA_BODY_SIZE:
+        if sessionKey is not None:
+            data, tag = encrypt_with_gcm(sessionKey,
+                                         content,
+                                         RESPONSE_BODY_NONCE)
+            ret['contentTag'] = b64encode(tag)
+            ret['content64'] = b64encode(data)
+        else:
+            ret['content64'] = b64encode(content)
+    else:
+        if sessionKey is None:
+            s3Data = content
+        else:
+            s3Data, tag = encrypt_with_gcm(sessionKey,
+                                           content,
+                                           RESPONSE_BODY_NONCE)
+            ret['s3Tag'] = b64encode(tag)
+        ret['s3Key'] = put_response_body_in_s3(s3BucketName, s3Data)
+    return ret
+
+
 def short_lived_handler(event, context):
     """Handle a single request and return it immediately"""
-    if 'ciphertext' in event:
-        sessionKey, event = decrypt_encrypted_event(event)
+    if 'key' in event:
+        sessionKey, eventMeta = decrypt_encrypted_metadata(event)
+        method = eventMeta['method']
+        url = eventMeta['url']
+        requestHeaders = eventMeta['headers']
+        s3BucketName = eventMeta.get('s3Bucket', None)
     else:
         sessionKey = None
+        method = event['method']
+        url = event['url']
+        requestHeaders = event['headers']
+        s3BucketName = event.get('s3Bucket', None)
 
-    method = event['method']
-    url = event['url']
-    requestHeaders = event['headers']
-    s3BucketName = event.get('s3Bucket', None)
-
-    if 'body64' in event:
-        requestBody = b64decode(event['body64'])
-    elif 's3Key' in event:
-        if s3BucketName is not None:
-            requestBody = get_request_body_from_s3(s3BucketName, event['s3Key'])
-            if sessionKey is not None:
-                tag = b64decode(event['s3Tag'])
-                requestBody = decrypt_with_gcm(sessionKey, requestBody, tag,
-                                               S3_REQUEST_NONCE)
-        else:
-            return {'statusCode': 500, 'headers': {}}
-    else:
-        requestBody = None
-
+    requestBody = decrypt_encrypted_body(event, sessionKey, s3BucketName)
     response = proxy_single_request(method, url, requestHeaders,
                                     requestBody, gzipResult=True)
     ret = {
@@ -82,26 +124,13 @@ def short_lived_handler(event, context):
         'headers': response.headers
     }
 
-    if response.content:
-        content64 = b64encode(response.content)
-        if not s3BucketName or len(content64) < MAX_LAMBDA_BODY_SIZE:
-            ret['content64'] = content64
-        else:
-            if sessionKey is None:
-                s3Data = response.content
-            else:
-                s3Data, tag = encrypt_with_gcm(sessionKey,
-                                               response.content,
-                                               S3_RESPONSE_NONCE)
-                ret['s3Tag'] = b64encode(tag)
-            ret['s3Key'] = put_response_body_in_s3(s3BucketName, s3Data)
+    if sessionKey is not None:
+        ret = encrypt_response_metadata(ret, sessionKey)
 
-    if sessionKey is None:
-        return ret
-    else:
-        ciphertext, tag = encrypt_with_gcm(sessionKey, json.dumps(ret),
-                                           RESPONSE_NONCE)
-        return {'ciphertext': b64encode(ciphertext), 'tag': b64encode(tag)}
+    if response.content:
+        ret.update(prepare_response_content(response.content, sessionKey,
+                                            s3BucketName))
+    return ret
 
 
 def handler(event, context):
