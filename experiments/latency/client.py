@@ -112,8 +112,12 @@ def plot_measurements(noProxy, withProxy, outputFile):
 
     ax0.errorbar(x, noProxyMeanLatency, yerr=noProxySdLatency, fmt='-ro',
                  label='no proxy')
+    for i, j in zip(x, noProxyMeanLatency):
+        ax0.annotate(str(j), xy=(i, j/2), color='red', fontsize=4)
     ax0.errorbar(x, withProxyMeanLatency, yerr=withProxySdLatency, fmt='-bx',
                  label='with proxy')
+    for i, j in zip(x, withProxyMeanLatency):
+        ax0.annotate(str(j), xy=(i, j*2), color='blue', fontsize=4)
     ax0.set_title('Average request latency vs. response size (N=%d)' % nSamples)
     ax0.set_xscale('log')
     ax0.set_ylabel('milliseconds')
