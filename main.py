@@ -10,12 +10,13 @@ from termcolor import colored
 
 from lib.headers import FILTERED_REQUEST_HEADERS, FILTERED_RESPONSE_HEADERS,\
     DEFAULT_USER_AGENT
-from lib.message_server import start_local_message_server
 from lib.proxy import ProxyInstance
 from lib.proxies.local import LocalProxy
 from lib.proxies.aws_short import ShortLivedLambdaProxy
+from lib.proxies.aws_stream import StreamLambdaProxy
 from lib.proxies.aws_long import LongLivedLambdaProxy
 from lib.proxies.mitm import MitmHttpsProxy
+from lib.servers.reverse import start_reverse_connection_server
 from lib.stats import Stats, ProxyStatsModel
 from lib.utils import ThreadedHTTPServer
 
@@ -36,7 +37,7 @@ LAMBDA_PUBLIC_KEY_PATH = 'lambda.public.pem'
 
 OVERRIDE_USER_AGENT = False
 
-LOCAL_MESSAGE_SERVER_PORT = 1081
+REVERSE_CONNECTION_SERVER_PORT = 1081
 
 
 def get_args():
@@ -64,13 +65,13 @@ def get_args():
     dataTransfer = parser.add_mutually_exclusive_group()
     dataTransfer.add_argument('--s3-bucket', '-s3', dest='s3Bucket', type=str,
                               help='s3Bucket to use for large file transport')
-    dataTransfer.add_argument('--message-server-host-and-port', '-ms', type=str,
-                              dest='messageServerHostAndPort',
+    dataTransfer.add_argument('--public-host-and-port', '-pub', type=str,
+                              dest='publicServerHostAndPort',
                               help='Host and port to send messages to. If '
                                    'running with a public IP, this should '
                                    'be <public-ip>:%d. Otherwise, this should '
                                    'be the <host>:<port> for reverse port '
-                                   'forwarding.' % LOCAL_MESSAGE_SERVER_PORT)
+                                   'forwarding.' % REVERSE_CONNECTION_SERVER_PORT)
 
     parser.add_argument('--max-lambdas', '-j', type=int,
                         default=DEFAULT_MAX_LAMBDAS, dest='maxLambdas',
@@ -103,13 +104,15 @@ def build_local_proxy(args, stats):
         return ProxyInstance(requestProxy=localProxy, streamProxy=localProxy)
 
 
-def build_lambda_proxy(args, stats, messageServer):
+def build_lambda_proxy(args, stats, reverseConnServer):
     """Request the resource using lambda"""
     functions = args.functions
     lambdaType = args.lambdaType
     maxLambdas = args.maxLambdas
     s3Bucket = args.s3Bucket
     verbose = args.verbose
+
+    lambdaPubKeyFile = LAMBDA_PUBLIC_KEY_PATH if args.enableEncryption else None
 
     print '  Running the proxy with lambda'
     if not functions:
@@ -120,12 +123,11 @@ def build_lambda_proxy(args, stats, messageServer):
 
     if lambdaType == 'short':
         print '  Using short-lived lambdas'
-        lambdaPubKeyFile = LAMBDA_PUBLIC_KEY_PATH if args.enableEncryption else None
         lambdaProxy = ShortLivedLambdaProxy(functions=functions,
                                             maxParallelRequests=maxLambdas,
                                             s3Bucket=s3Bucket,
                                             pubKeyFile=lambdaPubKeyFile,
-                                            messageServer=messageServer,
+                                            messageServer=reverseConnServer,
                                             stats=stats)
     elif lambdaType == 'long':
         print '  Using long-lived lambdas'
@@ -140,7 +142,8 @@ def build_lambda_proxy(args, stats, messageServer):
         print '  Unsupported lambda type'
         sys.exit(-1)
 
-    if args.enableMitm:
+    if args.enableMitm is True:
+        print '  Enabling MITM proxy'
         mitmProxy = MitmHttpsProxy(lambdaProxy,
                                    certfile=MITM_CERT_PATH,
                                    keyfile=MITM_KEY_PATH,
@@ -148,6 +151,14 @@ def build_lambda_proxy(args, stats, messageServer):
                                    overrideUserAgent=OVERRIDE_USER_AGENT,
                                    verbose=verbose)
         return ProxyInstance(requestProxy=lambdaProxy, streamProxy=mitmProxy)
+    elif args.publicServerHostAndPort is not None:
+        print '  Enabling lambda stream proxy'
+        streamProxy = StreamLambdaProxy(functions=functions,
+                                        maxParallelRequests=maxLambdas,
+                                        pubKeyFile=lambdaPubKeyFile,
+                                        streamServer=reverseConnServer,
+                                        stats=stats)
+        return ProxyInstance(requestProxy=lambdaProxy, streamProxy=streamProxy)
     else:
         print '  HTTPS will use the local proxy'
         localProxy = LocalProxy(stats=stats)
@@ -296,19 +307,20 @@ def main(host, port, args=None):
     stats = Stats()
     stats.register_model('proxy', ProxyStatsModel())
 
-    messageServer = None
-    if args.messageServerHostAndPort is not None:
-        print "Starting message server locally on port %d. Don't forget to" \
-              "set-up a reverse tunnel at %s for remote access" % (
-            LOCAL_MESSAGE_SERVER_PORT, args.messageServerHostAndPort)
-        messageServer = start_local_message_server(LOCAL_MESSAGE_SERVER_PORT,
-                                                   args.messageServerHostAndPort)
+    reverseConnServer = None
+    if args.publicServerHostAndPort is not None:
+        print "Starting reverse connection server locally on port %d. " \
+              "Don't forget to set-up a reverse tunnel at %s for remote " \
+              "access" % (
+            REVERSE_CONNECTION_SERVER_PORT, args.publicServerHostAndPort)
+        reverseConnServer = start_reverse_connection_server(
+            REVERSE_CONNECTION_SERVER_PORT, args.publicServerHostAndPort, stats)
 
     print 'Configuring proxy'
     if args.runLocal:
         proxy = build_local_proxy(args, stats)
     else:
-        proxy = build_lambda_proxy(args, stats, messageServer)
+        proxy = build_lambda_proxy(args, stats, reverseConnServer)
 
     handler = build_handler(proxy, stats, verbose=args.verbose)
     server = ThreadedHTTPServer((host, port), handler)
@@ -322,8 +334,8 @@ def main(host, port, args=None):
         pass
     server.server_close()
     server.shutdown()
-    if messageServer is not None:
-        messageServer.shutdown()
+    if reverseConnServer is not None:
+        reverseConnServer.shutdown()
     print 'Exiting'
 
 
