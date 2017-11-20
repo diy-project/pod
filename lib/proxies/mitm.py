@@ -194,12 +194,15 @@ class MitmHttpsProxy(AbstractStreamProxy):
         responseLines.append('')
         responseLines.append('')
 
+        responseSize = 0
         try:
             responseHeaders = '\r\n'.join(responseLines)
+            responseSize += len(responseHeaders)
             cliSslSock.sendall(responseHeaders)
-            self.__proxyModel.record_bytes_down(len(responseHeaders))
             if response.content:
+                responseSize += len(response.content)
                 cliSslSock.sendall(response.content)
-                self.__proxyModel.record_bytes_down(len(response.content))
         except socket.error, e:
             logger.warn('Error sending response: %s', e)
+        finally:
+            self.__proxyModel.record_bytes_down(responseSize)
