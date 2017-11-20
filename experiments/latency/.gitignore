@@ -1,2 +1,4 @@
 *.json
 *.pdf
+!example-output/*.json
+!example-output/*.pdf

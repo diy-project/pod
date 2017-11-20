@@ -127,7 +127,6 @@ def plot_measurements(noProxy, withProxy, outputFile):
     ax1.set_title('Average data rate vs. response size (N=%d)' % nSamples)
     ax1.set_xscale('log')
     ax1.set_ylabel('kbps')
-    ax0.set_yscale('log')
     ax1.legend(loc=0)
 
     plt.savefig(outputFile)
