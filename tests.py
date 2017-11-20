@@ -139,7 +139,7 @@ class TestBuildProxy(unittest.TestCase):
         args.enableEncryption = False
         args.lambdaType = 'short'
         args.s3Bucket = None
-        args.messageServerHostAndPort = None
+        args.publicServerHostAndPort = None
         args.maxLambdas = DEFAULT_MAX_LAMBDAS
         args.enableMitm = False
         args.disableStats = False
@@ -164,12 +164,12 @@ class TestBuildProxy(unittest.TestCase):
 
     @silence_stdout
     def test_build_lambda_with_mitm(self):
-        args, stats, messageServer = TestBuildProxy._get_default_setup()
+        args, stats, reverseServer = TestBuildProxy._get_default_setup()
         args.enableMitm = True
         args.functions = ['proxy']
         args.s3Bucket = 'mock-bucket'
         args.enableEncryption = True
-        proxy = build_lambda_proxy(args, stats, messageServer)
+        proxy = build_lambda_proxy(args, stats, reverseServer)
         build_handler(proxy, stats, verbose=True)
 
 

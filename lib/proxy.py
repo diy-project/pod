@@ -2,10 +2,12 @@ from abc import abstractmethod
 
 from shared.proxy import ProxyResponse as __ProxyResponse
 from shared.proxy import proxy_single_request as __proxy_single_request
+from shared.proxy import proxy_sockets as __proxy_sockets
 
 # Re-expose shared module members
 ProxyResponse = __ProxyResponse
 proxy_single_request = __proxy_single_request
+proxy_sockets = __proxy_sockets
 
 # For non-CONNECT requests:
 #   [request] makes a request for a single URL

@@ -3,6 +3,9 @@ Note: this file will be copied to the Lambda too. Do not
 add dependencies carelessly.
 """
 
+import errno
+import select
+
 from collections import namedtuple
 from requests import request
 
@@ -68,3 +71,33 @@ def proxy_single_request(method, url, headers, body, gzipResult=False):
     return ProxyResponse(statusCode=statusCode,
                          headers=responseHeaders,
                          content=responseBody)
+
+
+def proxy_sockets(sock1, sock2, idleTimeout, proxyModel=None):
+    rlist = [sock1, sock2]
+    wlist = []
+    waitSecs = 1.0
+    idleSecs = 0.0
+    while True:
+        idleSecs += waitSecs
+        (ins, _, exs) = select.select(rlist, wlist, rlist, waitSecs)
+        if exs: break
+        if ins:
+            for i in ins:
+                out = sock1 if i is sock2 else sock2
+                data = i.recv(8192)
+                if data:
+                    try:
+                        out.send(data)
+                        if proxyModel is not None:
+                            if out is sock1:
+                                proxyModel.record_bytes_down(len(data))
+                            else:
+                                proxyModel.record_bytes_up(len(data))
+                    except IOError as e:
+                        if e.errno == errno.EPIPE:
+                            break
+                        else:
+                            raise
+                idleSecs = 0.0
+        if idleSecs >= idleTimeout: break

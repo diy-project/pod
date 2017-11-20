@@ -2,7 +2,7 @@
 
 import argparse
 import proxy
-from impl import long
+from impl import long, short, stream
 
 
 def get_args():
@@ -32,6 +32,8 @@ def main():
             'method': 'GET',
             'headers': {}
         }
+        short.DEBUG = True
+
         print proxy.handler(event, DummyContext())
     else:
         assert args.id is not None
@@ -44,7 +46,6 @@ def main():
         if args.s3bucket:
             event['s3Bucket'] = args.s3bucket
 
-        proxy.DEBUG = True
         long.DEBUG = True
 
         while True:
