@@ -14,7 +14,7 @@ from subprocess import check_output
 def get_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('hostAndPort', type=str)
-    parser.add_argument('--num-requests', '-n', type=int, default=100, dest='n',
+    parser.add_argument('--num-requests', '-n', type=int, default=10, dest='n',
                         help='Number of parallel requests to make')
     return parser.parse_args()
 
@@ -53,7 +53,7 @@ def main(args):
     uniqueIPs = take_measurements(args.hostAndPort, args.n)
     for ip in uniqueIPs:
         print ip
-    print 'Count:', len(uniqueIPs)
+    print 'N: %d, Unique IPs: %d' % (args.n, len(uniqueIPs))
 
 
 if __name__ == '__main__':
