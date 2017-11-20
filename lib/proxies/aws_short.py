@@ -13,8 +13,9 @@ from Crypto.Random import get_random_bytes
 from lib.proxy import AbstractRequestProxy, ProxyResponse
 from lib.stats import LambdaStatsModel, S3StatsModel
 
-from shared.crypto import REQUEST_NONCE, RESPONSE_NONCE, S3_REQUEST_NONCE,\
-    S3_RESPONSE_NONCE, decrypt_with_gcm, encrypt_with_gcm
+from shared.crypto import REQUEST_META_NONCE, RESPONSE_META_NONCE, \
+    REQUEST_BODY_NONCE, RESPONSE_BODY_NONCE, \
+    decrypt_with_gcm, encrypt_with_gcm
 from shared.proxy import MAX_LAMBDA_BODY_SIZE
 
 logger = logging.getLogger(__name__)
@@ -32,14 +33,13 @@ def _get_region_from_arn(arn):
 class ShortLivedLambdaProxy(AbstractRequestProxy):
     """Invoke a lambda for each request"""
 
-    __lambda = boto3.client('lambda')
-
     def __init__(self, functions, maxParallelRequests, s3Bucket,
                  pubKeyFile, stats):
         self.__functions = functions
         self.__functionToClient = {}
         self.__regionToClient = {}
         self.__lambdaRateSemaphore = Semaphore(maxParallelRequests)
+        self.__lambda = boto3.client('lambda')
 
         if 'lambda' not in stats.models:
             stats.register_model('lambda', LambdaStatsModel())
@@ -103,52 +103,64 @@ class ShortLivedLambdaProxy(AbstractRequestProxy):
         self.__s3Stats.record_get(len(data))
         return key
 
-    def __prepare_request_body(self, invokeArgs, body, sessionKey):
-        encodedBody = b64encode(body)
-        if len(encodedBody) <= MAX_LAMBDA_BODY_SIZE:
-            invokeArgs['body64'] = encodedBody
+    def __prepare_request_body(self, body, sessionKey):
+        bodyArgs = {}
+        if len(body) <= MAX_LAMBDA_BODY_SIZE:
+            if self.__enableEncryption:
+                bodyData, bodyTag = encrypt_with_gcm(sessionKey, body,
+                                                     REQUEST_BODY_NONCE)
+                bodyArgs['bodyTag'] = b64encode(bodyTag)
+                bodyArgs['body64'] = b64encode(bodyData)
+            else:
+                bodyArgs['body64'] = b64encode(body)
         elif self.__enableS3:
             if self.__enableEncryption:
                 assert sessionKey is not None
                 s3Data, s3Tag = encrypt_with_gcm(sessionKey, body,
-                                                 S3_REQUEST_NONCE)
-                invokeArgs['s3Tag'] = b64encode(s3Tag)
+                                                 REQUEST_BODY_NONCE)
+                bodyArgs['s3Tag'] = b64encode(s3Tag)
             else:
                 s3Data = body
             requestS3Key = self.__put_object_into_s3(s3Data)
-            invokeArgs['s3Key'] = requestS3Key
+            bodyArgs['s3Key'] = requestS3Key
+        return bodyArgs
 
-    def __prepare_encrypted_request(self, invokeArgs, sessionKey):
+    def __prepare_encrypted_metadata(self, metaArgs, sessionKey):
         assert sessionKey is not None
         ciphertext, tag = encrypt_with_gcm(sessionKey,
-                                           json.dumps(invokeArgs),
-                                           REQUEST_NONCE)
+                                           json.dumps(metaArgs),
+                                           REQUEST_META_NONCE)
         key = self.__rsaCipher.encrypt(sessionKey)
         return {
-            'ciphertext': b64encode(ciphertext),
-            'tag': b64encode(tag),
+            'meta64': b64encode(ciphertext),
+            'metaTag': b64encode(tag),
             'key': b64encode(key)
         }
 
-    def __handle_encrypted_response(self, response, sessionKey):
+    def __handle_encrypted_metadata(self, response, sessionKey):
         assert sessionKey is not None
-        ciphertext = b64decode(response['ciphertext'])
-        tag = b64decode(response['tag'])
+        ciphertext = b64decode(response['meta64'])
+        tag = b64decode(response['metaTag'])
         plaintext = decrypt_with_gcm(sessionKey, ciphertext, tag,
-                                     RESPONSE_NONCE)
+                                     RESPONSE_META_NONCE)
         return json.loads(plaintext)
 
     def __handle_response_body(self, response, sessionKey):
         content = b''
         if 'content64' in response:
             content = b64decode(response['content64'])
+            if self.__enableEncryption:
+                assert sessionKey is not None
+                content = decrypt_with_gcm(sessionKey, content,
+                                           b64decode(response['contentTag']),
+                                           RESPONSE_BODY_NONCE)
         elif 's3Key' in response:
             content = self.__load_object_from_s3(response['s3Key'])
             if self.__enableEncryption:
                 assert sessionKey is not None
                 tag = b64decode(response['s3Tag'])
                 content = decrypt_with_gcm(sessionKey, content, tag,
-                                           S3_RESPONSE_NONCE)
+                                           RESPONSE_BODY_NONCE)
         return content
 
     def request(self, method, url, headers, body):
@@ -164,14 +176,13 @@ class ShortLivedLambdaProxy(AbstractRequestProxy):
                 'url': url,
                 'headers': headers,
             }
-            if body is not None:
-                self.__prepare_request_body(invokeArgs, body, sessionKey)
             if self.__enableS3:
                 invokeArgs['s3Bucket'] = self.__s3Bucket
-
             if self.__enableEncryption:
-                invokeArgs = self.__prepare_encrypted_request(invokeArgs,
-                                                              sessionKey)
+                invokeArgs = self.__prepare_encrypted_metadata(invokeArgs,
+                                                               sessionKey)
+            if body is not None:
+                invokeArgs.update(self.__prepare_request_body(body, sessionKey))
 
             function = random.choice(self.__functions)
             lambdaClient = self.__get_lambda_client(function)
@@ -202,10 +213,13 @@ class ShortLivedLambdaProxy(AbstractRequestProxy):
 
         response = json.loads(invokeResponse['Payload'].read())
         if self.__enableEncryption:
-            response = self.__handle_encrypted_response(response, sessionKey)
-
-        statusCode = response['statusCode']
-        headers = response['headers']
+            responseMeta = (self.__handle_encrypted_metadata(response,
+                                                             sessionKey))
+            statusCode = responseMeta['statusCode']
+            headers = responseMeta['headers']
+        else:
+            statusCode = response['statusCode']
+            headers = response['headers']
         content = self.__handle_response_body(response, sessionKey)
         return ProxyResponse(statusCode=statusCode, headers=headers,
                              content=content)

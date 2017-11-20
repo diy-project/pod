@@ -12,8 +12,9 @@ AUTO_DECODED_CONTENTS = {'gzip', 'deflate'}
 # Compress the body if the client accepts it
 MIN_COMPRESS_SIZE = 4096
 
-# The body can be up to 6MB, this leaves a bit of lee-way
-MAX_LAMBDA_BODY_SIZE = int(5.5 * 1024 * 1024)
+# The body can be up to 6MB, this leaves leeway while estimating the base64
+# overhead
+MAX_LAMBDA_BODY_SIZE = int(5.8 * 1024 * 1024) / 4 * 3
 
 # Header types
 ACCEPT_ENCODING = 'Accept-Encoding'

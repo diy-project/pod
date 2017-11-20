@@ -9,10 +9,10 @@ PRIVATE_KEY_ENV_VAR = 'RSA_PRIVATE_KEY'
 
 # Since a new symmetric key is generated for each request, we can hard code
 # these nonces.
-REQUEST_NONCE = 'request'
-S3_REQUEST_NONCE = 's3request'
-RESPONSE_NONCE = 'response'
-S3_RESPONSE_NONCE = 's3response'
+REQUEST_META_NONCE = 'requestMeta'
+REQUEST_BODY_NONCE = 'requestBody'
+RESPONSE_META_NONCE = 'responseMeta'
+RESPONSE_BODY_NONCE = 'responseBody'
 
 
 def encrypt_with_gcm(key, cleartext, nonce):
