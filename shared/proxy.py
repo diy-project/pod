@@ -76,7 +76,7 @@ def proxy_single_request(method, url, headers, body, gzipResult=False):
 def proxy_sockets(sock1, sock2, idleTimeout, proxyModel=None):
     rlist = [sock1, sock2]
     wlist = []
-    waitSecs = 1.0
+    waitSecs = 0.1
     idleSecs = 0.0
     while True:
         idleSecs += waitSecs
