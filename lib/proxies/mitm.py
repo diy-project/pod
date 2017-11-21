@@ -87,7 +87,7 @@ class MitmHttpsProxy(AbstractStreamProxy):
         cliSslSock = context.wrap_socket(cliSock, server_side=True)
         try:
             self.__stream_one_request(cliSslSock, servConn)
-        except Exception, e:
+        except Exception as e:
             logger.exception(e)
         finally:
             cliSslSock.shutdown(socket.SHUT_RDWR)
@@ -202,7 +202,7 @@ class MitmHttpsProxy(AbstractStreamProxy):
             if response.content:
                 responseSize += len(response.content)
                 cliSslSock.sendall(response.content)
-        except socket.error, e:
+        except socket.error as e:
             logger.warn('Error sending response: %s', e)
         finally:
             self.__proxyModel.record_bytes_down(responseSize)

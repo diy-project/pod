@@ -262,7 +262,7 @@ def build_handler(proxy, stats, verbose):
                 self.wfile.write(response.content)
                 approxResponseLen += len(response.content)
                 proxyStats.record_bytes_down(approxResponseLen)
-            except Exception, e:
+            except Exception as e:
                 logger.exception(e)
             return
 
@@ -273,7 +273,7 @@ def build_handler(proxy, stats, verbose):
             host, port = self.path.split(':')
             try:
                 sock = proxy.connect(host, port)
-            except Exception, e:
+            except Exception as e:
                 logger.exception(e)
                 self.send_error(520)
                 self.end_headers()
@@ -285,7 +285,7 @@ def build_handler(proxy, stats, verbose):
                 self.send_header('Proxy-Connection', 'close')
                 self.end_headers()
                 proxy.stream(self.connection, sock)
-            except Exception, e:
+            except Exception as e:
                 logger.exception(e)
             finally:
                 sock.close()
