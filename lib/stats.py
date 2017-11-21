@@ -217,7 +217,7 @@ class LambdaStatsModel(_AbstractCostModel, _AbstractTimeModel):
                                  billedMillis)
                 else:
                     logging.error('Failed to find billing duration in log')
-            except Exception, e:
+            except Exception as e:
                 logger.exception(e)
 
     def record(self):

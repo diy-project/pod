@@ -143,7 +143,7 @@ def process_single_message(message, responseQueue, s3Bucket, queuedRequestsSemap
         response = proxy_single_request(method, url, requestHeaders,
                                         requestBody, gzipResult=True)
         send_response_to_message(task, response, responseQueue, s3Bucket)
-    except Exception, e:
+    except Exception as e:
         print traceback.format_exc(e)
     finally:
         queuedRequestsSemaphore.release()

@@ -1,5 +1,4 @@
 import atexit
-import boto3
 import json
 import logging
 import random
@@ -17,6 +16,12 @@ LambdaSqsResult = LambdaSqsResult
 LambdaSqsTask = LambdaSqsTask
 
 logger = logging.getLogger(__name__)
+
+try:
+    import boto3
+except ImportError as e:
+    logger.error('Failed to import boto3')
+    boto3 = None
 
 MAX_SQS_REQUEST_MESSAGES = 10
 
@@ -274,7 +279,7 @@ class WorkerManager(object):
             else:
                 logger.info('Setting result: %s', taskId)
                 taskFuture.set(result)
-        except Exception, e:
+        except Exception as e:
             logger.error('Failed to parse message: %s', message)
             logger.exception(e)
         finally:
@@ -303,7 +308,7 @@ class WorkerManager(object):
                 logger.info('Received %d messages', len(messages))
                 self.__result_handler_pool.map(
                     self.__handle_single_result_message, messages)
-            except Exception, e:
+            except Exception as e:
                 logger.error('Error polling SQS')
                 logger.exception(e)
             finally:
@@ -318,5 +323,5 @@ class WorkerManager(object):
                         if len(result['Successful']) != len(messages):
                             raise Exception('Failed to delete all messages: %s'
                                             % result['Failed'])
-                    except Exception, e:
+                    except Exception as e:
                         logger.exception(e)

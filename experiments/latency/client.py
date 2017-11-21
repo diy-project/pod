@@ -67,7 +67,7 @@ def take_measurements(hostAndPort, enableProxy):
             try:
                 resultsForSize.append(single_measurement(hostAndPort, size,
                                                          enableProxy))
-            except Exception, e:
+            except Exception as e:
                 print >> sys.stderr, e
             time.sleep(SECONDS_BETWEEN_REQUESTS)
             print '.',
