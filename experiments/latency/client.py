@@ -32,6 +32,9 @@ def get_args():
     parser.add_argument('--no-measure', '-nm', action='store_true',
                         dest='noMeasure',
                         help='Regenerate plot with cached measurements')
+    parser.add_argument('--proxy', '-p', type=str, dest='proxyHostAndPort',
+                        default='localhost',
+                        help='Host and port of the proxy to use')
     parser.add_argument('--output-prefix', type=str, default='output',
                         dest='outputPrefix',
                         help='File prefix to write the resulting plots and '
@@ -39,20 +42,20 @@ def get_args():
     return parser.parse_args()
 
 
-def single_measurement(hostAndPort, size, enableProxy):
+def single_measurement(hostAndPort, size, proxyHostAndPort):
     args = [
         'curl', '-o', '/dev/null', '-s',
         '-w', '%{time_total},%{speed_download}'
     ]
-    if enableProxy:
-        args.extend(['-x', 'localhost'])
+    if proxyHostAndPort is not None:
+        args.extend(['-x', proxyHostAndPort])
     args.append('%s/%d' % (hostAndPort, size))
     time, rate = check_output(args).split(',')
     return float(time), float(rate)
 
 
-def take_measurements(hostAndPort, enableProxy):
-    print 'Fetching %s with proxy=%s' % (hostAndPort, str(enableProxy))
+def take_measurements(hostAndPort, proxyHostAndPort):
+    print 'Fetching %s with proxy=%s' % (hostAndPort, str(proxyHostAndPort))
     power = 0
     results = OrderedDict()
     while True:
@@ -66,7 +69,7 @@ def take_measurements(hostAndPort, enableProxy):
         for _ in xrange(NUM_TRIALS_PER_SIZE):
             try:
                 resultsForSize.append(single_measurement(hostAndPort, size,
-                                                         enableProxy))
+                                                         proxyHostAndPort))
             except Exception as e:
                 print >> sys.stderr, e
             time.sleep(SECONDS_BETWEEN_REQUESTS)
@@ -143,8 +146,8 @@ def main(args):
         with open(args.outputPrefix + '-with-proxy.json', 'r') as ifs:
             withProxy = json.load(ifs, object_pairs_hook=OrderedDict)
     else:
-        noProxy = take_measurements(args.hostAndPort, False)
-        withProxy = take_measurements(args.hostAndPort, True)
+        noProxy = take_measurements(args.hostAndPort, None)
+        withProxy = take_measurements(args.hostAndPort, args.proxyHostAndPort)
 
         with open(args.outputPrefix + '-no-proxy.json', 'w') as ofs:
             json.dump(noProxy, ofs, indent=4)
