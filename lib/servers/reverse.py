@@ -50,7 +50,7 @@ class Socket(object):
 
 class ReverseConnectionServer(object):
 
-    def __init__(self, publicHostAndPort, messageTimeout=5, connTimeout=15):
+    def __init__(self, publicHostAndPort, messageTimeout=5, connTimeout=5):
         self.__messages = {}
         self.__messagesLock = Lock()
 
@@ -178,6 +178,8 @@ def start_reverse_connection_server(localPort, publicHostAndPort, stats):
                     return
                 proxy_sockets(socketRequest.sock, self.connection,
                               socketRequest.idleTimeout, proxyModel)
+            except Exception as e:
+                logger.exception(e)
             finally:
                 if socketRequest is not None:
                     socketRequest.close()

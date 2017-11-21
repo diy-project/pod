@@ -1,8 +1,10 @@
+import logging
 import socket
 
 from lib.proxy import AbstractRequestProxy, AbstractStreamProxy,\
     proxy_single_request, proxy_sockets
 
+logger = logging.getLogger(__name__)
 
 class LocalProxy(AbstractRequestProxy, AbstractStreamProxy):
 
@@ -26,5 +28,10 @@ class LocalProxy(AbstractRequestProxy, AbstractStreamProxy):
 
     def stream(self, cliSock, servConn):
         assert isinstance(servConn, LocalProxy.Connection)
-        proxy_sockets(cliSock, servConn.sock, self.__connIdleTimeout,
-                      self.__proxyModel)
+        try:
+            proxy_sockets(cliSock, servConn.sock, self.__connIdleTimeout,
+                          self.__proxyModel)
+        except Exception as e:
+            logger.exception(e)
+        finally:
+            cliSock.close()

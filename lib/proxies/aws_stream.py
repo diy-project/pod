@@ -35,7 +35,7 @@ class StreamLambdaProxy(AbstractStreamProxy):
             return self.host + ':' + self.port
 
     def __init__(self, functions, maxParallelRequests,
-                 pubKeyFile, streamServer, stats, maxIdleTimeout=5):
+                 pubKeyFile, streamServer, stats, maxIdleTimeout=1):
         self.__connIdleTimeout = maxIdleTimeout
         self.__functions = functions
         self.__functionToClient = {}
