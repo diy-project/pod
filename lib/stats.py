@@ -224,6 +224,35 @@ class LambdaStatsModel(_AbstractCostModel, _AbstractTimeModel):
         return LambdaStatsModel.Request(self)
 
 
+class EC2StatsModel(_AbstractCostModel, _AbstractDataModel):
+
+    class Constants:
+        PER_GB_COST = 0.09
+
+    def __init__(self):
+        self.__totalBytesUp = 0
+        self.__totalBytesDown = 0
+
+    @property
+    def cost(self):
+        return float(self.__totalBytesDown) / (2 ** 30) * \
+               EC2StatsModel.Constants.PER_GB_COST
+
+    @property
+    def bytesUp(self):
+        return self.__totalBytesUp
+
+    @property
+    def bytesDown(self):
+        return self.__totalBytesDown
+
+    def record_bytes_up(self, n):
+        self.__totalBytesUp += n
+
+    def record_bytes_down(self, n):
+        self.__totalBytesDown += n
+
+
 class SqsStatsModel(_AbstractCostModel, _AbstractDataModel):
 
     class Constants:

@@ -73,31 +73,39 @@ def proxy_single_request(method, url, headers, body, gzipResult=False):
                          content=responseBody)
 
 
-def proxy_sockets(sock1, sock2, idleTimeout, proxyModel=None):
+def proxy_sockets(sock1, sock2, idleTimeout):
+    bytes1 = 0
+    bytes2 = 0
+    error = None
     rlist = [sock1, sock2]
     wlist = []
     waitSecs = 0.1
     idleSecs = 0.0
-    while True:
-        idleSecs += waitSecs
-        (ins, _, exs) = select.select(rlist, wlist, rlist, waitSecs)
-        if exs: break
-        if ins:
-            for i in ins:
-                out = sock1 if i is sock2 else sock2
-                data = i.recv(8192)
-                if data:
-                    try:
-                        out.send(data)
-                        if proxyModel is not None:
+
+    try:
+        while True:
+            idleSecs += waitSecs
+            (ins, _, exs) = select.select(rlist, wlist, rlist, waitSecs)
+            if exs: break
+            if ins:
+                for i in ins:
+                    out = sock1 if i is sock2 else sock2
+                    data = i.recv(8192)
+                    if data:
+                        try:
+                            out.send(data)
                             if out is sock1:
-                                proxyModel.record_bytes_down(len(data))
+                                bytes1 += len(data)
                             else:
-                                proxyModel.record_bytes_up(len(data))
-                    except IOError as e:
-                        if e.errno == errno.EPIPE:
-                            break
-                        else:
-                            raise
-                idleSecs = 0.0
-        if idleSecs >= idleTimeout: break
+                                bytes2 += len(data)
+                        except IOError as e:
+                            if e.errno == errno.EPIPE:
+                                break
+                            else:
+                                error = e
+                                break
+                    idleSecs = 0.0
+            if idleSecs >= idleTimeout: break
+    except Exception as e:
+        error = e
+    return error, bytes1, bytes2
