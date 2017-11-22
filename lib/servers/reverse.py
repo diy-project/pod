@@ -4,8 +4,9 @@ import time
 from BaseHTTPServer import BaseHTTPRequestHandler
 from threading import Thread, Lock, Condition
 
-from lib.utils import ThreadedHTTPServer
 from lib.proxy import proxy_sockets
+from lib.stats import EC2StatsModel
+from lib.utils import ThreadedHTTPServer
 
 logger = logging.getLogger(__name__)
 
@@ -128,6 +129,10 @@ class ReverseConnectionServer(object):
 
 def start_reverse_connection_server(localPort, publicHostAndPort, stats):
     proxyModel = stats.get_model('proxy')
+    if 'ec2' not in stats.models:
+        stats.register_model('ec2', EC2StatsModel())
+    ec2Model = stats.get_model('ec2')
+
     server = ReverseConnectionServer(publicHostAndPort)
     testLivenessResponse = 'Server is live!\n'
 
@@ -176,8 +181,15 @@ def start_reverse_connection_server(localPort, publicHostAndPort, stats):
                     self.send_error(404, 'Resource not found')
                     self.end_headers()
                     return
-                proxy_sockets(socketRequest.sock, self.connection,
-                              socketRequest.idleTimeout, proxyModel)
+                err, bytesDown, bytesUp = \
+                    proxy_sockets(socketRequest.sock, self.connection,
+                              socketRequest.idleTimeout)
+                if err is not None:
+                    logger.exception(err)
+                proxyModel.record_bytes_down(bytesDown)
+                proxyModel.record_bytes_up(bytesUp)
+                ec2Model.record_bytes_down(bytesDown)
+                ec2Model.record_bytes_up(bytesUp)
             except Exception as e:
                 logger.exception(e)
             finally:
