@@ -183,7 +183,7 @@ def start_reverse_connection_server(localPort, publicHostAndPort, stats):
                     return
                 err, bytesDown, bytesUp = \
                     proxy_sockets(socketRequest.sock, self.connection,
-                              socketRequest.idleTimeout)
+                                  socketRequest.idleTimeout)
                 if err is not None:
                     logger.exception(err)
                 proxyModel.record_bytes_down(bytesDown)

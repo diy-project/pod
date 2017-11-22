@@ -29,11 +29,12 @@ class LocalProxy(AbstractRequestProxy, AbstractStreamProxy):
     def stream(self, cliSock, servConn):
         assert isinstance(servConn, LocalProxy.Connection)
         try:
-            err, _, _ = proxy_sockets(cliSock, servConn.sock,
-                                      self.__connIdleTimeout,
-                                      self.__proxyModel)
+            err, bytesDown, bytesUp = proxy_sockets(cliSock, servConn.sock,
+                                                    self.__connIdleTimeout)
             if err is not None:
                 logger.exception(err)
+            self.__proxyModel.record_bytes_down(bytesDown)
+            self.__proxyModel.record_bytes_up(bytesUp)
         except Exception as e:
             logger.exception(e)
         finally:
