@@ -66,8 +66,11 @@ def take_measurements(urls, n, proxyHostAndPort):
 
         parsedUrl = urlparse(url)
         measurements = []
-        for i in xrange(n):
-            print '%s: %d/%d\r' % (url, i, n),
+        i = 0
+        numFailures = 0
+        backoff = SECONDS_BETWEEN_REQUESTS
+        while i < n:
+            print '%s: %d/%d (%d failures)\r' % (url, i, n, numFailures),
             sys.stdout.flush()
             try:
                 measurements.append(single_measurement(url, proxyHostAndPort,
@@ -75,10 +78,13 @@ def take_measurements(urls, n, proxyHostAndPort):
                 shutil.move('screenshot.png',
                             os.path.join(SCREENSHOTS_DIR,
                                          '%s-%d.png' % (parsedUrl.hostname, i)))
+                backoff = SECONDS_BETWEEN_REQUESTS
+                i += 1
             except:
-                print >> sys.stderr, 'request %d failed for %s' % (i, url)
-            time.sleep(SECONDS_BETWEEN_REQUESTS)
-        print '%s: %d/%d' % (url, n, n)
+                numFailures +=1
+                backoff *= 2
+            time.sleep(backoff)
+        print '%s: %d/%d (%d failures)' % (url, i, n, numFailures)
         sys.stdout.flush()
         results[url] = measurements
         if len(measurements) > 0:
