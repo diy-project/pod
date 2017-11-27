@@ -37,7 +37,7 @@ def generate_plot(result1, name1, result2, name2, outfile):
 
     def get_mean_sd(result):
         mean = [np.mean(result[k]) for k in result]
-        sd = [np.mean(result[k]) for k in result]
+        sd = [np.std(result[k]) for k in result]
         return mean, sd
 
     names = [k for k in result1]
