@@ -4,6 +4,7 @@
 import argparse
 import json
 import os
+import re
 import shutil
 import sys
 import time
@@ -11,14 +12,14 @@ import time
 import numpy as np
 
 from collections import OrderedDict
-from subprocess import check_call, CalledProcessError
+from subprocess import check_output, CalledProcessError, STDOUT
 from urlparse import urlparse
 
 SECONDS_BETWEEN_REQUESTS = 1
 
 SCREENSHOTS_DIR = 'screenshots'
 
-DEBUG_LOG_FILE = 'chrome.log'
+PARSE_TIME_OUTPUT_RE = re.compile(r'([\d.]+)user\s+([\d.]+)system')
 
 
 def get_args():
@@ -36,6 +37,7 @@ def get_args():
 
 def single_measurement(url, proxyHostAndPort, screenshot=False):
     args = [
+        'time',
         'google-chrome',
         '--headless',
         '--disable-gpu',
@@ -49,11 +51,8 @@ def single_measurement(url, proxyHostAndPort, screenshot=False):
     if proxyHostAndPort is not None:
         args.append('--proxy-server=%s' % proxyHostAndPort)
     args.append(url)
-    with open(DEBUG_LOG_FILE, 'ab') as logfile:
-        startTime = time.time()
-        check_call(args, stdout=logfile, stderr=logfile)
-        finTime = time.time() - startTime
-    return finTime * 1000
+    match = PARSE_TIME_OUTPUT_RE.search(check_output(args, stderr=STDOUT))
+    return (float(match.group(1)) + float(match.group(2))) * 1000
 
 
 def take_measurements(urls, n, proxyHostAndPort):

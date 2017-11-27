@@ -50,7 +50,8 @@ def get_args():
     parser.add_argument('--local', '-l', action='store_true',
                         dest='runLocal',
                         help='Run the proxy locally')
-    parser.add_argument('--function', '-f', dest='functions', action='append',
+    parser.add_argument('--function', '-f', dest='functions', type=str,
+                        nargs='+',
                         help='Lambda functions by name (default-region) or ARN')
 
     parser.add_argument('--encrypt', '-e', action='store_true',
