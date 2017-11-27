@@ -37,5 +37,3 @@ class LocalProxy(AbstractRequestProxy, AbstractStreamProxy):
             self.__proxyModel.record_bytes_up(bytesUp)
         except Exception as e:
             logger.exception(e)
-        finally:
-            servConn.close()
