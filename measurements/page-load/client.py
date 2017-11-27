@@ -11,12 +11,14 @@ import time
 import numpy as np
 
 from collections import OrderedDict
-from subprocess import check_call
+from subprocess import check_call, CalledProcessError
 from urlparse import urlparse
 
 SECONDS_BETWEEN_REQUESTS = 1
 
 SCREENSHOTS_DIR = 'screenshots'
+
+DEBUG_LOG_FILE = 'chrome.log'
 
 
 def get_args():
@@ -47,9 +49,9 @@ def single_measurement(url, proxyHostAndPort, screenshot=False):
     if proxyHostAndPort is not None:
         args.append('--proxy-server=%s' % proxyHostAndPort)
     args.append(url)
-    with open(os.devnull, 'w') as devnull:
+    with open(DEBUG_LOG_FILE, 'ab') as logfile:
         startTime = time.time()
-        check_call(args, stdout=devnull, stderr=devnull)
+        check_call(args, stdout=logfile, stderr=logfile)
         finTime = time.time() - startTime
     return finTime * 1000
 
@@ -80,7 +82,8 @@ def take_measurements(urls, n, proxyHostAndPort):
                                          '%s-%d.png' % (parsedUrl.hostname, i)))
                 backoff = SECONDS_BETWEEN_REQUESTS
                 i += 1
-            except:
+            except CalledProcessError as e:
+                print >> sys.stderr, e
                 numFailures +=1
                 backoff *= 2
             time.sleep(backoff)

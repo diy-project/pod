@@ -153,7 +153,8 @@ class MitmHttpsProxy(AbstractStreamProxy):
         url = 'https://%s:%s%s' % (servSock.host, servSock.port, path)
         headers = {}
         for headerLine in requestLines[1:]:
-            header, value = headerLine.split(': ', 1)
+            header, value = headerLine.split(':', 1)
+            value = value.strip()
             if header in FILTERED_REQUEST_HEADERS:
                 continue
             if header == 'Content-Length':
