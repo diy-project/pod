@@ -58,11 +58,3 @@ aws lambda invoke --invocation-type RequestResponse \
     --cli-binary-format raw-in-base64-out \
     --payload '{"url":"http://google.com/","method":"GET","headers":{}}' \
     /dev/stdout
-
-aws lambda invoke --invocation-type RequestResponse \
-    --function-name proxy \
-    --region us-east-1 \
-    --log-type Tail \
-    --cli-binary-format raw-in-base64-out \
-    --payload '{"url":"http://google.com/","method":"GET","headers":{}}' \
-    /dev/stdout
