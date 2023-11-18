@@ -46,16 +46,19 @@ def proxy_single_request(method, url, headers, body, gzipResult=False):
 
         # TODO: this does not handle nested encoding
         hasContentEncoding = False
+        headers_to_remove = []
         for header in responseHeaders.keys():
-            if (TRANSFER_ENCODING.lower() == header.lower()
-                and responseHeaders[header] == 'chunked'):
-                del responseHeaders[header]
+            if TRANSFER_ENCODING.lower() == header.lower() and responseHeaders[header] == 'chunked':
+                headers_to_remove.append(header)
 
-            if (CONTENT_ENCODING.lower() == header.lower()):
+            if CONTENT_ENCODING.lower() == header.lower():
                 if responseHeaders[header] in AUTO_DECODED_CONTENTS:
-                    del responseHeaders[header]
+                    headers_to_remove.append(header)
                 else:
                     hasContentEncoding = True
+
+        for header in headers_to_remove:
+            del responseHeaders[header]
 
         if gzipResult and len(responseBody) > MIN_COMPRESS_SIZE:
             if (ACCEPT_ENCODING in responseHeaders
