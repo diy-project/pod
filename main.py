@@ -4,7 +4,7 @@ import argparse
 import logging
 import sys
 
-from BaseHTTPServer import BaseHTTPRequestHandler
+from http.server import BaseHTTPRequestHandler
 from fake_useragent import UserAgent
 from termcolor import colored
 
@@ -88,11 +88,11 @@ def get_args():
 def build_local_proxy(args, stats):
     """Request the resource locally"""
 
-    print '  Running the proxy locally. This provides no privacy!'
+    print('  Running the proxy locally. This provides no privacy!')
 
     localProxy = LocalProxy(stats=stats)
     if args.enableMitm:
-        print '  MITM proxy enabled'
+        print('  MITM proxy enabled')
         mitmProxy = MitmHttpsProxy(localProxy,
                                    certfile=MITM_CERT_PATH,
                                    keyfile=MITM_KEY_PATH,
@@ -114,15 +114,15 @@ def build_lambda_proxy(args, stats, reverseConnServer):
 
     lambdaPubKeyFile = LAMBDA_PUBLIC_KEY_PATH if args.enableEncryption else None
 
-    print '  Running the proxy with lambda'
+    print('  Running the proxy with lambda')
     if not functions:
-        print 'No functions specified'
+        print('No functions specified')
         sys.exit(-1)
 
-    print '  Using functions:', ', '.join(functions)
+    print('  Using functions:', ', '.join(functions))
 
     if lambdaType == 'short':
-        print '  Using short-lived lambdas'
+        print('  Using short-lived lambdas')
         lambdaProxy = ShortLivedLambdaProxy(functions=functions,
                                             maxParallelRequests=maxLambdas,
                                             s3Bucket=s3Bucket,
@@ -130,7 +130,7 @@ def build_lambda_proxy(args, stats, reverseConnServer):
                                             messageServer=reverseConnServer,
                                             stats=stats)
     elif lambdaType == 'long':
-        print '  Using long-lived lambdas'
+        print('  Using long-lived lambdas')
         assert args.enableEncryption is False, \
             'Full encryption is not supported for long lived proxies'
         lambdaProxy = LongLivedLambdaProxy(functions=functions,
@@ -139,11 +139,11 @@ def build_lambda_proxy(args, stats, reverseConnServer):
                                            stats=stats,
                                            verbose=verbose)
     else:
-        print '  Unsupported lambda type'
+        print('  Unsupported lambda type')
         sys.exit(-1)
 
     if args.enableMitm is True:
-        print '  Enabling MITM proxy'
+        print('  Enabling MITM proxy')
         mitmProxy = MitmHttpsProxy(lambdaProxy,
                                    certfile=MITM_CERT_PATH,
                                    keyfile=MITM_KEY_PATH,
@@ -152,7 +152,7 @@ def build_lambda_proxy(args, stats, reverseConnServer):
                                    verbose=verbose)
         return ProxyInstance(requestProxy=lambdaProxy, streamProxy=mitmProxy)
     elif args.publicServerHostAndPort is not None:
-        print '  Enabling lambda stream proxy'
+        print('  Enabling lambda stream proxy')
         streamProxy = StreamLambdaProxy(functions=functions,
                                         maxParallelRequests=maxLambdas,
                                         pubKeyFile=lambdaPubKeyFile,
@@ -160,7 +160,7 @@ def build_lambda_proxy(args, stats, reverseConnServer):
                                         stats=stats)
         return ProxyInstance(requestProxy=lambdaProxy, streamProxy=streamProxy)
     else:
-        print '  HTTPS will use the local proxy'
+        print('  HTTPS will use the local proxy')
         localProxy = LocalProxy(stats=stats)
         return ProxyInstance(requestProxy=lambdaProxy, streamProxy=localProxy)
 
@@ -186,17 +186,17 @@ def build_handler(proxy, stats, verbose):
     class ProxyHandler(BaseHTTPRequestHandler):
 
         def _print_request(self):
-            print colored('command (http): %s %s' % (self.command, self.path),
-                          'white', 'on_blue')
+            print(colored('command (http): %s %s' % (self.command, self.path),
+                          'white', 'on_blue'))
             for header in self.headers:
-                print '  %s: %s' % (header, self.headers[header])
+                print('  %s: %s' % (header, self.headers[header]))
 
         def _print_response(self, response):
-            print colored('url: %s' % self.path, 'white', 'on_yellow')
-            print 'status:', response.statusCode
+            print(colored('url: %s' % self.path, 'white', 'on_yellow'))
+            print('status:', response.statusCode)
             for header in response.headers:
-                print '  %s: %s' % (header, response.headers[header])
-            print 'content-len:', len(response.content)
+                print('  %s: %s' % (header, response.headers[header]))
+            print('content-len:', len(response.content))
 
         def log_message(self, format, *args):
             """Override the default logging to not print ot stdout"""
@@ -309,14 +309,14 @@ def main(host, port, args=None):
 
     reverseConnServer = None
     if args.publicServerHostAndPort is not None:
-        print "Starting reverse connection server locally on port %d. " \
+        print("Starting reverse connection server locally on port %d. " \
               "Don't forget to set-up a reverse tunnel at %s for remote " \
               "access" % (
-            REVERSE_CONNECTION_SERVER_PORT, args.publicServerHostAndPort)
+            REVERSE_CONNECTION_SERVER_PORT, args.publicServerHostAndPort))
         reverseConnServer = start_reverse_connection_server(
             REVERSE_CONNECTION_SERVER_PORT, args.publicServerHostAndPort, stats)
 
-    print 'Configuring proxy'
+    print('Configuring proxy')
     if args.runLocal:
         proxy = build_local_proxy(args, stats)
     else:
@@ -325,7 +325,7 @@ def main(host, port, args=None):
     handler = build_handler(proxy, stats, verbose=args.verbose)
     server = ThreadedHTTPServer((host, port), handler)
 
-    print 'Starting proxy, use <Ctrl-C> to stop'
+    print('Starting proxy, use <Ctrl-C> to stop')
     if not args.disableStats:
         stats.start_live_summary(refreshRate=1, logFileName=LOG_FILE)
     try:
@@ -336,7 +336,7 @@ def main(host, port, args=None):
     server.shutdown()
     if reverseConnServer is not None:
         reverseConnServer.shutdown()
-    print 'Exiting'
+    print('Exiting')
 
 
 if __name__ == '__main__':

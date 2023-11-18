@@ -1,7 +1,7 @@
 import logging
 import time
 
-from BaseHTTPServer import BaseHTTPRequestHandler
+from http.server import BaseHTTPRequestHandler
 from threading import Thread, Lock, Condition
 
 from lib.proxy import proxy_sockets

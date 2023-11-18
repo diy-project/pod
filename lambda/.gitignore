@@ -1,9 +1,10 @@
 certifi
-chardet
+charset_normalizer
 idna
 requests
 urllib3
 Crypto
 shared
+bin
 *-info
 *.zip

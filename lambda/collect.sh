@@ -3,14 +3,14 @@
 SCRIPTDIR=`dirname '$BASH_SOURCE'`
 
 # Install requirements
-pip install requests pycryptodome -t $SCRIPTDIR
+pip3 install requests==2.29.0 pycryptodome  -t $SCRIPTDIR
 
 # Copy shared libraries to the Lambda
 cp -r $SCRIPTDIR/../shared $SCRIPTDIR/
 
 zip proxy.zip -x '*.pyc' -r \
     certifi \
-    chardet \
+    charset_normalizer \
     idna \
     requests \
     urllib3 \

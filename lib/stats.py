@@ -9,7 +9,7 @@ from abc import abstractproperty
 from base64 import b64decode
 from collections import OrderedDict
 from datetime import datetime
-from StringIO import StringIO
+from io import StringIO
 from termcolor import colored
 from threading import Thread
 
@@ -84,7 +84,7 @@ class Stats(object):
                     totalCost += modelCost
                     values.append('cost: ${:8f}'.format(modelCost))
                 if isinstance(model, _AbstractTimeModel):
-                    values.append('time: {:8d}s'.format(int(model.time) / 1000))
+                    values.append('time: {:8.2f}s'.format(float(model.time) / 1000))
                     values.append('mean: {:7d}ms'.format(int(model.mean)))
                 if isinstance(model, _AbstractDataModel):
                     MBDown = float(model.bytesDown) / MEGABYTE
@@ -92,12 +92,11 @@ class Stats(object):
                     values.append('up: {:9.3f}MB'.format(MBUp))
                     values.append('down: {:7.3f}MB'.format(MBDown))
 
-                print >> sio, colored('[%#8s]' % name, color), '  '.join(values)
+                print(colored('[%#8s]' % name, 'red'), '  '.join(values), file=sio)
 
             name = 'total'
             color = DEFAULT_COLORS[len(self.__models) % numColors]
-            print >> sio, colored('[%#8s]' % name, color), \
-                'cost: ${:8f}'.format(totalCost)
+            print(colored('[%#8s]' % name, color), 'cost: ${:8.2f}'.format(totalCost), file=sio)
             return sio.getvalue()
         finally:
             sio.close()

@@ -6,7 +6,7 @@ import socket
 import ssl
 import tempfile
 
-from httplib import responses
+from http.client import responses
 from OpenSSL import crypto
 from random import SystemRandom
 from termcolor import colored
@@ -20,17 +20,17 @@ logger = logging.getLogger(__name__)
 
 
 def _print_mitm_request(method, url, headers):
-    print colored('command (https): %s %s' % (method, url), 'white', 'on_red')
+    print(colored('command (https): %s %s' % (method, url), 'white', 'on_red'))
     for k, v in headers.iteritems():
-        print '  %s: %s' % (k, v)
+        print('  %s: %s' % (k, v))
 
 
 def _print_mitm_response(url, response):
-    print colored('url: %s' % url, 'white', 'on_green')
-    print 'status:', response.statusCode
+    print(colored('url: %s' % url, 'white', 'on_green'))
+    print('status:', response.statusCode)
     for k, v in response.headers.iteritems():
-        print '  %s: %s' % (k, v)
-    print 'content-len:', len(response.content)
+        print('  %s: %s' % (k, v))
+    print('content-len:', len(response.content))
 
 
 class MitmHttpsProxy(AbstractStreamProxy):

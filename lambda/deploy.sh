@@ -23,11 +23,13 @@ echo
 if [[ $REPLY =~ ^[Yy]$ ]]; then
     aws lambda update-function-code \
         --function-name $FUNCTION_NAME \
+        --region $REGION_NAME \
         --zip-file fileb://proxy.zip
 
     # TODO: should set the private key in a more secure manner
     aws lambda update-function-configuration \
         --function-name $FUNCTION_NAME \
+        --region $REGION_NAME \
         --environment "{\"Variables\":{\"RSA_PRIVATE_KEY\":\"$(cat $LAMBDA_PRIV_KEY_FILE)\"}}" \
         --memory-size $LAMBDA_SIZE \
         --timeout $LAMBDA_TIMEOUT
@@ -40,7 +42,7 @@ else
         --function-name $FUNCTION_NAME \
         --environment "{\"Variables\":{\"RSA_PRIVATE_KEY\":\"$(cat $LAMBDA_PRIV_KEY_FILE)\"}}" \
         --zip-file fileb://proxy.zip \
-        --runtime python2.7 \
+        --runtime python3.9 \
         --region $REGION_NAME \
         --role $ROLE_NAME \
         --handler proxy.handler \
@@ -53,5 +55,14 @@ aws lambda invoke --invocation-type RequestResponse \
     --function-name $FUNCTION_NAME \
     --region $REGION_NAME \
     --log-type Tail \
+    --cli-binary-format raw-in-base64-out \
+    --payload '{"url":"http://google.com/","method":"GET","headers":{}}' \
+    /dev/stdout
+
+aws lambda invoke --invocation-type RequestResponse \
+    --function-name proxy \
+    --region us-east-1 \
+    --log-type Tail \
+    --cli-binary-format raw-in-base64-out \
     --payload '{"url":"http://google.com/","method":"GET","headers":{}}' \
     /dev/stdout

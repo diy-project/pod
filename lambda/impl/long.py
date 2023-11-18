@@ -45,9 +45,9 @@ def _lazy_worker_init():
 
 
 def log_request(method, url, headers):
-    print method, url
+    print(method, url)
     for header, value in headers.iteritems():
-        print '  %s: %s' % (header, value)
+        print('  %s: %s' % (header, value))
 
 
 def send_response_as_fragments(task, response, responseQueue,
@@ -61,8 +61,8 @@ def send_response_as_fragments(task, response, responseQueue,
     if numFragments > MAX_NUM_FRAGMENTS:
         raise Exception('Too many fragments: %d', numFragments)
 
-    if DEBUG: print 'Sending response in %d chunks' % numFragments
-    for i in xrange(numFragments):
+    if DEBUG: print('Sending response in %d chunks' % numFragments)
+    for i in range(numFragments):
         part = LambdaSqsResult(taskId=task.taskId,
                                numFragments=numFragments,
                                fragmentId=i)
@@ -144,7 +144,7 @@ def process_single_message(message, responseQueue, s3Bucket, queuedRequestsSemap
                                         requestBody, gzipResult=True)
         send_response_to_message(task, response, responseQueue, s3Bucket)
     except Exception as e:
-        print traceback.format_exc(e)
+        print(traceback.format_exc(e))
     finally:
         queuedRequestsSemaphore.release()
 
@@ -160,15 +160,15 @@ def long_lived_handler(event, context):
     s3BucketName = event.get('s3Bucket', None)
 
     if DEBUG:
-        print 'Running long-lived as: worker', workerId
-        print 'Consuming requests from:', requestQueueName
-        print 'Returning responses to:', responseQueueName
+        print('Running long-lived as: worker', workerId)
+        print('Consuming requests from:', requestQueueName)
+        print('Returning responses to:', responseQueueName)
 
     s3Bucket = None
     if s3BucketName is not None:
         s3Bucket = boto3.resource('s3').Bucket(s3BucketName)
         if DEBUG:
-            print 'Serving large responses from s3:', s3BucketName
+            print('Serving large responses from s3:', s3BucketName)
 
     requestQueue = sqs.get_queue_by_name(QueueName=requestQueueName)
     responseQueue = sqs.get_queue_by_name(QueueName=responseQueueName)
@@ -184,20 +184,20 @@ def long_lived_handler(event, context):
             break
 
         # Acquire worst case number of semaphores
-        for _ in xrange(MAX_NUM_SQS_MESSAGES):
+        for _ in range(MAX_NUM_SQS_MESSAGES):
             queuedRequestsSemaphore.acquire()
 
-        if DEBUG: print 'Polling SQS for new requests'
+        if DEBUG: print('Polling SQS for new requests')
         messages = requestQueue.receive_messages(
             MessageAttributeNames=MESSAGE_ATTRIBUTE_NAMES,
             MaxNumberOfMessages=MAX_NUM_SQS_MESSAGES)
 
         # Release extra semaphores
-        for _ in xrange(MAX_NUM_SQS_MESSAGES - len(messages)):
+        for _ in range(MAX_NUM_SQS_MESSAGES - len(messages)):
             queuedRequestsSemaphore.release()
 
         if len(messages) > 0:
-            if DEBUG: print 'Handling %d proxy requests' % len(messages)
+            if DEBUG: print('Handling %d proxy requests' % len(messages))
             for message in messages:
                 pool.submit(process_single_message, message,
                             responseQueue, s3Bucket,
@@ -212,7 +212,7 @@ def long_lived_handler(event, context):
 
             idlePolls = 0
         else:
-            if DEBUG: print 'No new requests from queue'
+            if DEBUG: print('No new requests from queue')
             idlePolls += 1
 
         if idlePolls > MAX_IDLE_POLLS:
@@ -220,7 +220,7 @@ def long_lived_handler(event, context):
             break
 
     # Wait for any straggling requests
-    for _ in xrange(MAX_QUEUED_REQUESTS):
+    for _ in range(MAX_QUEUED_REQUESTS):
         queuedRequestsSemaphore.acquire()
 
     return {

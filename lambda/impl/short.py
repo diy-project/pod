@@ -2,6 +2,7 @@ import boto3
 import hashlib
 import json
 import os
+import codecs
 
 from base64 import b64encode, b64decode
 from Crypto.PublicKey import RSA
@@ -21,7 +22,7 @@ S3_RESOURCE = boto3.resource('s3')
 rsaPrivKey = os.environ.get(PRIVATE_KEY_ENV_VAR, None)
 RSA_CIPHER = None
 if rsaPrivKey is not None:
-    RSA_CIPHER = PKCS1_OAEP.new(RSA.importKey(rsaPrivKey.decode('hex')))
+    RSA_CIPHER = PKCS1_OAEP.new(RSA.importKey(codecs.getdecoder("hex_codec")(rsaPrivKey)[0]))
 
 
 def decrypt_encrypted_metadata(event):

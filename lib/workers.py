@@ -130,7 +130,7 @@ class WorkerManager(object):
 
         # Start result fetcher thread
         self.__result_handler_pool = ThreadPoolExecutor(DEFAULT_POLLING_THREADS)
-        for i in xrange(DEFAULT_POLLING_THREADS):
+        for i in range(DEFAULT_POLLING_THREADS):
             rt = Thread(target=self.__result_daemon)
             rt.daemon = True
             rt.start()
@@ -274,7 +274,7 @@ class WorkerManager(object):
                 if len(taskFuture._partial) == result.numFragments:
                     taskFuture.set([
                         taskFuture._partial[i]
-                        for i in xrange(result.numFragments)
+                        for i in range(result.numFragments)
                     ])
             else:
                 logger.info('Setting result: %s', taskId)
